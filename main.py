@@ -1689,6 +1689,110 @@ async def channels_autocomplete(interaction: discord.Interaction, current: str):
     ]
 
 
+@bot.tree.command(name="dbstatus", description="Check database connection and status")
+async def database_status_command(interaction: discord.Interaction):
+    """Check database connection status and show database information"""
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    if not bot.db_pool:
+        embed = discord.Embed(
+            title="📊 Database Status",
+            description="❌ **Database not configured**\n\nThe bot is running without database persistence.\nMemory-based storage is being used instead.",
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="💡 To Enable Database",
+            value="Add a PostgreSQL service to your Render deployment and set the DATABASE_URL environment variable.",
+            inline=False
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    try:
+        async with bot.db_pool.acquire() as conn:
+            # Get database info
+            version = await conn.fetchval('SELECT version()')
+            current_time = await conn.fetchval('SELECT NOW()')
+            
+            # Get table count
+            table_count = await conn.fetchval("""
+                SELECT COUNT(*) FROM information_schema.tables 
+                WHERE table_schema = 'public'
+            """)
+            
+            # Get connection info
+            pool_size = bot.db_pool.get_size()
+            pool_idle = bot.db_pool.get_idle_size()
+            
+            embed = discord.Embed(
+                title="📊 Database Status",
+                description="✅ **Database Connected & Working**",
+                color=discord.Color.green()
+            )
+            
+            embed.add_field(
+                name="🗄️ PostgreSQL Info",
+                value=f"Version: {version.split()[1]}\nServer Time: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📊 Connection Pool",
+                value=f"Pool Size: {pool_size}\nIdle Connections: {pool_idle}\nActive: {pool_size - pool_idle}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📋 Tables",
+                value=f"Total Tables: {table_count}",
+                inline=True
+            )
+            
+            # Check specific bot tables
+            bot_tables = ['role_history', 'active_members', 'weekend_pending', 'dm_schedule', 'auto_role_config']
+            existing_tables = []
+            
+            for table in bot_tables:
+                exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = $1
+                    )
+                """, table)
+                if exists:
+                    existing_tables.append(table)
+            
+            if existing_tables:
+                embed.add_field(
+                    name="🤖 Bot Tables",
+                    value=f"Created: {len(existing_tables)}/{len(bot_tables)}\n" + "\n".join(f"✅ {table}" for table in existing_tables),
+                    inline=False
+                )
+            
+            embed.set_footer(text="Database is functioning properly for persistent memory storage")
+            
+    except Exception as e:
+        embed = discord.Embed(
+            title="📊 Database Status",
+            description="❌ **Database Connection Error**",
+            color=discord.Color.red()
+        )
+        embed.add_field(
+            name="Error Details",
+            value=f"```{str(e)[:500]}```",
+            inline=False
+        )
+        embed.add_field(
+            name="💡 Troubleshooting",
+            value="1. Check DATABASE_URL environment variable\n2. Verify PostgreSQL service is running\n3. Check network connectivity",
+            inline=False
+        )
+    
+    await interaction.followup.send(embed=embed)
+
+
 @bot.tree.command(name="stats", description="Send trading statistics summary")
 @app_commands.describe(
     date_range="Date range for the statistics",
@@ -1810,11 +1914,31 @@ async def web_server():
     async def health_check(request):
         bot_status = "Connected" if bot.is_ready() else "Connecting"
         guild_count = len(bot.guilds) if bot.is_ready() else 0
-
+        
+        # Check database connection status
+        database_status = "Not configured"
+        database_details = {}
+        
+        if bot.db_pool:
+            try:
+                async with bot.db_pool.acquire() as conn:
+                    # Test database connection
+                    version = await conn.fetchval('SELECT version()')
+                    database_status = "Connected"
+                    database_details = {
+                        "postgresql_version": version.split()[1] if version else "Unknown",
+                        "pool_size": bot.db_pool.get_size(),
+                        "pool_idle": bot.db_pool.get_idle_size()
+                    }
+            except Exception as e:
+                database_status = f"Error: {str(e)[:50]}"
+        
         response_data = {
             "status": "running",
             "bot_status": bot_status,
             "guild_count": guild_count,
+            "database_status": database_status,
+            "database_details": database_details,
             "uptime": str(datetime.now()),
             "version": "2.0"
         }
