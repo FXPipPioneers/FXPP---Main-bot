@@ -58,10 +58,10 @@ AUTO_ROLE_CONFIG = {
     "Hey! Your **24-hour free access** to the <#1350929852299214999> channel has unfortunately **ran out**. We truly hope you were able to benefit with us & we hope to see you back soon! For now, feel free to continue following our trade signals in ⁠<#1350929790148022324>",
     "active_members":
     {},  # member_id: {"role_added_time": datetime, "role_id": role_id, "weekend_delayed": bool, "guild_id": guild_id, "expiry_time": datetime}
-    "weekend_pending": {
-    },  # member_id: {"join_time": datetime, "guild_id": guild_id} for weekend joiners
-    "role_history": {
-    },  # member_id: {"first_granted": datetime, "times_granted": int, "last_expired": datetime, "guild_id": guild_id}
+    "weekend_pending":
+    {},  # member_id: {"join_time": datetime, "guild_id": guild_id} for weekend joiners
+    "role_history":
+    {},  # member_id: {"first_granted": datetime, "times_granted": int, "last_expired": datetime, "guild_id": guild_id}
     "dm_schedule": {
     }  # member_id: {"role_expired": datetime, "guild_id": guild_id, "dm_3_sent": bool, "dm_7_sent": bool, "dm_14_sent": bool}
 }
@@ -103,10 +103,13 @@ class TradingBot(commands.Bot):
         """Initialize database connection and create tables"""
         try:
             # Try multiple possible database environment variables (Render uses different names)
-            database_url = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_URL') or os.getenv('POSTGRESQL_URL')
-            
+            database_url = os.getenv('DATABASE_URL') or os.getenv(
+                'POSTGRES_URL') or os.getenv('POSTGRESQL_URL')
+
             if not database_url:
-                print("❌ No database URL found - continuing without persistent memory")
+                print(
+                    "❌ No database URL found - continuing without persistent memory"
+                )
                 print("   To enable persistent memory on Render:")
                 print("   1. Add a PostgreSQL service to your Render account")
                 print("   2. Set DATABASE_URL environment variable")
@@ -114,12 +117,11 @@ class TradingBot(commands.Bot):
 
             # Create connection pool with Render-optimized settings
             self.db_pool = await asyncpg.create_pool(
-                database_url, 
-                min_size=1, 
+                database_url,
+                min_size=1,
                 max_size=5,  # Lower for Render's limits
                 command_timeout=30,
-                server_settings={'application_name': 'discord-trading-bot'}
-            )
+                server_settings={'application_name': 'discord-trading-bot'})
             print("✅ PostgreSQL connection pool created for persistent memory")
 
             # Create tables
@@ -134,7 +136,7 @@ class TradingBot(commands.Bot):
                         guild_id BIGINT NOT NULL
                     )
                 ''')
-                
+
                 # Active members table for current role holders
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS active_members (
@@ -147,7 +149,7 @@ class TradingBot(commands.Bot):
                         custom_duration BOOLEAN DEFAULT FALSE
                     )
                 ''')
-                
+
                 # Weekend pending table
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS weekend_pending (
@@ -156,7 +158,7 @@ class TradingBot(commands.Bot):
                         guild_id BIGINT NOT NULL
                     )
                 ''')
-                
+
                 # DM schedule table for follow-up campaigns
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS dm_schedule (
@@ -168,7 +170,7 @@ class TradingBot(commands.Bot):
                         dm_14_sent BOOLEAN DEFAULT FALSE
                     )
                 ''')
-                
+
                 # Auto-role config table for bot settings
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS auto_role_config (
@@ -181,65 +183,85 @@ class TradingBot(commands.Bot):
                 ''')
 
             print("✅ Database tables initialized")
-            
+
             # Load existing config from database
             await self.load_config_from_db()
-            
+
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
-            print("   Continuing with in-memory storage only (data will be lost on restart)")
+            print(
+                "   Continuing with in-memory storage only (data will be lost on restart)"
+            )
             print("   To fix this on Render:")
             print("   1. Add PostgreSQL service in Render dashboard")
             print("   2. Connect it to your web service")
             print("   3. Restart the service")
             self.db_pool = None
-            
+
     async def load_config_from_db(self):
         """Load configuration from database"""
         if not self.db_pool:
             return
-            
+
         try:
             async with self.db_pool.acquire() as conn:
                 # Load auto-role config
-                config_row = await conn.fetchrow('SELECT * FROM auto_role_config ORDER BY id DESC LIMIT 1')
+                config_row = await conn.fetchrow(
+                    'SELECT * FROM auto_role_config ORDER BY id DESC LIMIT 1')
                 if config_row:
                     AUTO_ROLE_CONFIG["enabled"] = config_row['enabled']
-                    AUTO_ROLE_CONFIG["role_id"] = config_row['role_id'] 
-                    AUTO_ROLE_CONFIG["duration_hours"] = config_row['duration_hours']
+                    AUTO_ROLE_CONFIG["role_id"] = config_row['role_id']
+                    AUTO_ROLE_CONFIG["duration_hours"] = config_row[
+                        'duration_hours']
                     if config_row['custom_message']:
-                        AUTO_ROLE_CONFIG["custom_message"] = config_row['custom_message']
+                        AUTO_ROLE_CONFIG["custom_message"] = config_row[
+                            'custom_message']
 
                 # Load active members
                 active_rows = await conn.fetch('SELECT * FROM active_members')
                 for row in active_rows:
-                    AUTO_ROLE_CONFIG["active_members"][str(row['member_id'])] = {
-                        "role_added_time": row['role_added_time'].isoformat(),
-                        "role_id": row['role_id'],
-                        "guild_id": row['guild_id'],
-                        "weekend_delayed": row['weekend_delayed'],
-                        "expiry_time": row['expiry_time'].isoformat() if row['expiry_time'] else None,
-                        "custom_duration": row['custom_duration']
-                    }
-                
+                    AUTO_ROLE_CONFIG["active_members"][str(
+                        row['member_id'])] = {
+                            "role_added_time":
+                            row['role_added_time'].isoformat(),
+                            "role_id":
+                            row['role_id'],
+                            "guild_id":
+                            row['guild_id'],
+                            "weekend_delayed":
+                            row['weekend_delayed'],
+                            "expiry_time":
+                            row['expiry_time'].isoformat()
+                            if row['expiry_time'] else None,
+                            "custom_duration":
+                            row['custom_duration']
+                        }
+
                 # Load weekend pending
-                weekend_rows = await conn.fetch('SELECT * FROM weekend_pending')
+                weekend_rows = await conn.fetch('SELECT * FROM weekend_pending'
+                                                )
                 for row in weekend_rows:
-                    AUTO_ROLE_CONFIG["weekend_pending"][str(row['member_id'])] = {
-                        "join_time": row['join_time'].isoformat(),
-                        "guild_id": row['guild_id']
-                    }
-                
+                    AUTO_ROLE_CONFIG["weekend_pending"][str(
+                        row['member_id'])] = {
+                            "join_time": row['join_time'].isoformat(),
+                            "guild_id": row['guild_id']
+                        }
+
                 # Load role history
                 history_rows = await conn.fetch('SELECT * FROM role_history')
                 for row in history_rows:
                     AUTO_ROLE_CONFIG["role_history"][str(row['member_id'])] = {
-                        "first_granted": row['first_granted'].isoformat(),
-                        "times_granted": row['times_granted'],
-                        "last_expired": row['last_expired'].isoformat() if row['last_expired'] else None,
-                        "guild_id": row['guild_id']
+                        "first_granted":
+                        row['first_granted'].isoformat(),
+                        "times_granted":
+                        row['times_granted'],
+                        "last_expired":
+                        row['last_expired'].isoformat()
+                        if row['last_expired'] else None,
+                        "guild_id":
+                        row['guild_id']
                     }
-                
+
                 # Load DM schedule
                 dm_rows = await conn.fetch('SELECT * FROM dm_schedule')
                 for row in dm_rows:
@@ -247,12 +269,12 @@ class TradingBot(commands.Bot):
                         "role_expired": row['role_expired'].isoformat(),
                         "guild_id": row['guild_id'],
                         "dm_3_sent": row['dm_3_sent'],
-                        "dm_7_sent": row['dm_7_sent'], 
+                        "dm_7_sent": row['dm_7_sent'],
                         "dm_14_sent": row['dm_14_sent']
                     }
-                    
+
                 print("✅ Configuration loaded from database")
-                
+
         except Exception as e:
             print(f"❌ Failed to load config from database: {e}")
 
@@ -281,7 +303,7 @@ class TradingBot(commands.Bot):
 
         # Force sync after bot is ready for better reliability
         self.first_sync_done = False
-        
+
         # Initialize database
         await self.init_database()
 
@@ -456,13 +478,16 @@ class TradingBot(commands.Bot):
 
             role = member.guild.get_role(AUTO_ROLE_CONFIG["role_id"])
             if not role:
-                await self.log_to_discord(f"❌ Auto-role not found in guild {member.guild.name}")
+                await self.log_to_discord(
+                    f"❌ Auto-role not found in guild {member.guild.name}")
                 return
 
             # Check if user has already received the role before (anti-abuse system)
             member_id_str = str(member.id)
             if member_id_str in AUTO_ROLE_CONFIG["role_history"]:
-                await self.log_to_discord(f"🚫 {member.display_name} has already received auto-role before - access denied (anti-abuse)")
+                await self.log_to_discord(
+                    f"🚫 {member.display_name} has already received auto-role before - access denied (anti-abuse)"
+                )
                 return
 
             join_time = datetime.now(AMSTERDAM_TZ)
@@ -495,8 +520,8 @@ class TradingBot(commands.Bot):
                 try:
                     weekend_message = (
                         "**Welcome to FX Pip Pioneers!** As a welcome gift, we usually give our new members "
-                        "**access to the Premium Signals channel for 24 hours.** However, the trading markets are closed right now "
-                        "because it's the weekend. We're writing to let you know that your 24 hours will start counting down from "
+                        "**access to the Premium Signals channel for 24 hours.** However, the trading markets are currently closed for the weekend. "
+                        "We're Messaging you to let you know that your 24 hours of access to <#1384668129036075109> will start counting down from "
                         "the moment the markets open again on Monday. This way, your welcome gift won't be wasted on the weekend "
                         "and you'll actually be able to make use of it.")
                     await member.send(weekend_message)
@@ -572,11 +597,12 @@ class TradingBot(commands.Bot):
         """Save auto-role configuration to database"""
         if not self.db_pool:
             return  # No database available
-            
+
         try:
             async with self.db_pool.acquire() as conn:
                 # Save main config - use upsert with a fixed ID
-                await conn.execute('''
+                await conn.execute(
+                    '''
                     INSERT INTO auto_role_config (id, enabled, role_id, duration_hours, custom_message)
                     VALUES (1, $1, $2, $3, $4)
                     ON CONFLICT (id) DO UPDATE SET
@@ -584,40 +610,52 @@ class TradingBot(commands.Bot):
                         role_id = $2, 
                         duration_hours = $3,
                         custom_message = $4
-                ''', AUTO_ROLE_CONFIG["enabled"], AUTO_ROLE_CONFIG["role_id"], 
-                AUTO_ROLE_CONFIG["duration_hours"], AUTO_ROLE_CONFIG["custom_message"])
-                
+                ''', AUTO_ROLE_CONFIG["enabled"], AUTO_ROLE_CONFIG["role_id"],
+                    AUTO_ROLE_CONFIG["duration_hours"],
+                    AUTO_ROLE_CONFIG["custom_message"])
+
                 # Save active members
                 await conn.execute('DELETE FROM active_members')
-                for member_id, data in AUTO_ROLE_CONFIG["active_members"].items():
+                for member_id, data in AUTO_ROLE_CONFIG[
+                        "active_members"].items():
                     expiry_time = None
                     if data.get("expiry_time"):
-                        expiry_time = datetime.fromisoformat(data["expiry_time"].replace('Z', '+00:00'))
-                    
-                    await conn.execute('''
+                        expiry_time = datetime.fromisoformat(
+                            data["expiry_time"].replace('Z', '+00:00'))
+
+                    await conn.execute(
+                        '''
                         INSERT INTO active_members 
                         (member_id, role_added_time, role_id, guild_id, weekend_delayed, expiry_time, custom_duration)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ''', int(member_id), datetime.fromisoformat(data["role_added_time"].replace('Z', '+00:00')),
-                    data["role_id"], data["guild_id"], data["weekend_delayed"], 
-                    expiry_time, data.get("custom_duration", False))
-                
+                    ''', int(member_id),
+                        datetime.fromisoformat(data["role_added_time"].replace(
+                            'Z', '+00:00')), data["role_id"], data["guild_id"],
+                        data["weekend_delayed"], expiry_time,
+                        data.get("custom_duration", False))
+
                 # Save weekend pending
                 await conn.execute('DELETE FROM weekend_pending')
-                for member_id, data in AUTO_ROLE_CONFIG["weekend_pending"].items():
-                    await conn.execute('''
+                for member_id, data in AUTO_ROLE_CONFIG[
+                        "weekend_pending"].items():
+                    await conn.execute(
+                        '''
                         INSERT INTO weekend_pending (member_id, join_time, guild_id)
                         VALUES ($1, $2, $3)
-                    ''', int(member_id), datetime.fromisoformat(data["join_time"].replace('Z', '+00:00')), 
-                    data["guild_id"])
-                
+                    ''', int(member_id),
+                        datetime.fromisoformat(data["join_time"].replace(
+                            'Z', '+00:00')), data["guild_id"])
+
                 # Save role history using UPSERT to avoid conflicts
-                for member_id, data in AUTO_ROLE_CONFIG["role_history"].items():
+                for member_id, data in AUTO_ROLE_CONFIG["role_history"].items(
+                ):
                     last_expired = None
                     if data.get("last_expired"):
-                        last_expired = datetime.fromisoformat(data["last_expired"].replace('Z', '+00:00'))
-                        
-                    await conn.execute('''
+                        last_expired = datetime.fromisoformat(
+                            data["last_expired"].replace('Z', '+00:00'))
+
+                    await conn.execute(
+                        '''
                         INSERT INTO role_history (member_id, first_granted, times_granted, last_expired, guild_id)
                         VALUES ($1, $2, $3, $4, $5)
                         ON CONFLICT (member_id) DO UPDATE SET
@@ -625,12 +663,15 @@ class TradingBot(commands.Bot):
                             times_granted = $3,
                             last_expired = $4,
                             guild_id = $5
-                    ''', int(member_id), datetime.fromisoformat(data["first_granted"].replace('Z', '+00:00')),
-                    data["times_granted"], last_expired, data["guild_id"])
-                
+                    ''', int(member_id),
+                        datetime.fromisoformat(data["first_granted"].replace(
+                            'Z', '+00:00')), data["times_granted"],
+                        last_expired, data["guild_id"])
+
                 # Save DM schedule using UPSERT
                 for member_id, data in AUTO_ROLE_CONFIG["dm_schedule"].items():
-                    await conn.execute('''
+                    await conn.execute(
+                        '''
                         INSERT INTO dm_schedule (member_id, role_expired, guild_id, dm_3_sent, dm_7_sent, dm_14_sent)
                         VALUES ($1, $2, $3, $4, $5, $6)
                         ON CONFLICT (member_id) DO UPDATE SET
@@ -639,9 +680,12 @@ class TradingBot(commands.Bot):
                             dm_3_sent = $4,
                             dm_7_sent = $5,
                             dm_14_sent = $6
-                    ''', int(member_id), datetime.fromisoformat(data["role_expired"].replace('Z', '+00:00')),
-                    data["guild_id"], data["dm_3_sent"], data["dm_7_sent"], data["dm_14_sent"])
-                    
+                    ''', int(member_id),
+                        datetime.fromisoformat(data["role_expired"].replace(
+                            'Z',
+                            '+00:00')), data["guild_id"], data["dm_3_sent"],
+                        data["dm_7_sent"], data["dm_14_sent"])
+
         except Exception as e:
             print(f"❌ Error saving to database: {str(e)}")
 
@@ -735,14 +779,19 @@ class TradingBot(commands.Bot):
 
         # Define the follow-up messages
         dm_messages = {
-            3: "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer",
-            7: "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers have been catching trade setups daily**.\n\nIf you found value in just 24 hours, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer",
-            14: "Hey! It's been two weeks since your access to Premium Signals ended. We hope you've stayed active.\n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. in <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **officially invite you back into Premium Signals** and help you start compounding results again.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
+            3:
+            "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer",
+            7:
+            "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers have been catching trade setups daily**.\n\nIf you found value in just 24 hours, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer",
+            14:
+            "Hey! It's been two weeks since your access to Premium Signals ended. We hope you've stayed active.\n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. in <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **officially invite you back into Premium Signals** and help you start compounding results again.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
         }
 
-        for member_id, schedule_data in AUTO_ROLE_CONFIG["dm_schedule"].items():
+        for member_id, schedule_data in AUTO_ROLE_CONFIG["dm_schedule"].items(
+        ):
             try:
-                expiry_time = datetime.fromisoformat(schedule_data["role_expired"])
+                expiry_time = datetime.fromisoformat(
+                    schedule_data["role_expired"])
                 if expiry_time.tzinfo is None:
                     expiry_time = expiry_time.replace(tzinfo=AMSTERDAM_TZ)
                 else:
@@ -751,21 +800,28 @@ class TradingBot(commands.Bot):
                 # Check for each follow-up period
                 for days, message in dm_messages.items():
                     sent_key = f"dm_{days}_sent"
-                    
+
                     if not schedule_data.get(sent_key, False):
                         time_diff = current_time - expiry_time
-                        
+
                         if time_diff >= timedelta(days=days):
                             messages_to_send.append({
-                                'member_id': member_id,
-                                'guild_id': schedule_data['guild_id'],
-                                'message': message,
-                                'days': days,
-                                'sent_key': sent_key
+                                'member_id':
+                                member_id,
+                                'guild_id':
+                                schedule_data['guild_id'],
+                                'message':
+                                message,
+                                'days':
+                                days,
+                                'sent_key':
+                                sent_key
                             })
 
             except Exception as e:
-                await self.log_to_discord(f"❌ Error processing DM schedule for member {member_id}: {str(e)}")
+                await self.log_to_discord(
+                    f"❌ Error processing DM schedule for member {member_id}: {str(e)}"
+                )
 
         # Send the messages
         for msg_data in messages_to_send:
@@ -781,24 +837,35 @@ class TradingBot(commands.Bot):
                 # Check if member has Gold Pioneer role - if so, skip the DM
                 gold_pioneer_role = guild.get_role(GOLD_PIONEER_ROLE_ID)
                 if gold_pioneer_role and gold_pioneer_role in member.roles:
-                    await self.log_to_discord(f"⏭️ Skipping {msg_data['days']}-day DM for {member.display_name} - already has Gold Pioneer role")
+                    await self.log_to_discord(
+                        f"⏭️ Skipping {msg_data['days']}-day DM for {member.display_name} - already has Gold Pioneer role"
+                    )
                     # Mark as sent even though we skipped it
-                    AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][msg_data['sent_key']] = True
+                    AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][
+                        msg_data['sent_key']] = True
                     continue
 
                 # Send the follow-up DM
                 await member.send(msg_data['message'])
-                await self.log_to_discord(f"📬 Sent {msg_data['days']}-day follow-up DM to {member.display_name}")
-                
+                await self.log_to_discord(
+                    f"📬 Sent {msg_data['days']}-day follow-up DM to {member.display_name}"
+                )
+
                 # Mark as sent
-                AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][msg_data['sent_key']] = True
+                AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][
+                    msg_data['sent_key']] = True
 
             except discord.Forbidden:
-                await self.log_to_discord(f"⚠️ Could not send {msg_data['days']}-day follow-up DM to member {msg_data['member_id']} (DMs disabled)")
+                await self.log_to_discord(
+                    f"⚠️ Could not send {msg_data['days']}-day follow-up DM to member {msg_data['member_id']} (DMs disabled)"
+                )
                 # Mark as sent to avoid retrying
-                AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][msg_data['sent_key']] = True
+                AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][
+                    msg_data['sent_key']] = True
             except Exception as e:
-                await self.log_to_discord(f"❌ Error sending {msg_data['days']}-day follow-up DM to member {msg_data['member_id']}: {str(e)}")
+                await self.log_to_discord(
+                    f"❌ Error sending {msg_data['days']}-day follow-up DM to member {msg_data['member_id']}: {str(e)}"
+                )
 
         # Save config if any changes were made
         if messages_to_send:
@@ -903,10 +970,11 @@ class TradingBot(commands.Bot):
                     f"❌ Error sending DM to {member.display_name}: {str(e)}")
 
             current_time = datetime.now(AMSTERDAM_TZ)
-            
+
             # Update role history with expiration time
             if member_id in AUTO_ROLE_CONFIG["role_history"]:
-                AUTO_ROLE_CONFIG["role_history"][member_id]["last_expired"] = current_time.isoformat()
+                AUTO_ROLE_CONFIG["role_history"][member_id][
+                    "last_expired"] = current_time.isoformat()
 
             # Schedule follow-up DMs (3, 7, 14 days after expiration)
             AUTO_ROLE_CONFIG["dm_schedule"][member_id] = {
@@ -1213,28 +1281,30 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                 role = interaction.guild.get_role(
                     AUTO_ROLE_CONFIG["role_id"]
                 ) if interaction.guild and AUTO_ROLE_CONFIG["role_id"] else None
-                
+
                 # Count only members who actually have the role and aren't expired
                 actual_active_count = 0
-                for member_id, data in AUTO_ROLE_CONFIG["active_members"].items():
+                for member_id, data in AUTO_ROLE_CONFIG[
+                        "active_members"].items():
                     try:
                         # Check if member exists and has the role
                         guild = interaction.guild
                         if not guild:
                             continue
-                        
+
                         member = guild.get_member(int(member_id))
                         if not member:
                             continue
-                        
+
                         # Check if member has the role and isn't expired
                         if role and role in member.roles:
-                            time_display = get_remaining_time_display(member_id)
+                            time_display = get_remaining_time_display(
+                                member_id)
                             if time_display is not None:  # Not expired
                                 actual_active_count += 1
                     except Exception:
                         continue
-                
+
                 weekend_pending_count = len(
                     AUTO_ROLE_CONFIG.get("weekend_pending", {}))
 
@@ -1268,7 +1338,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
 
             # Build the list of active members with precise time remaining
             member_list = []
-            
+
             # Get the role object for checking
             role = interaction.guild.get_role(
                 AUTO_ROLE_CONFIG["role_id"]
@@ -1284,7 +1354,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                     member = guild.get_member(int(member_id))
                     if not member:
                         continue
-                    
+
                     # Only show members who actually have the role
                     if role and role not in member.roles:
                         continue
@@ -1618,18 +1688,19 @@ Stop Loss: {levels['sl']}"""
         # Channel mapping
         channel_mapping = {
             "Free channel": [1350929790148022324],
-            "Premium channel": [1384668129036075109], 
+            "Premium channel": [1384668129036075109],
             "Both": [1350929790148022324, 1384668129036075109],
             "Testing": [1394958907943817326]
         }
-        
+
         target_channels = channel_mapping.get(channels, [])
         sent_channels = []
 
         for channel_id in target_channels:
             target_channel = bot.get_channel(channel_id)
-            
-            if target_channel and isinstance(target_channel, discord.TextChannel):
+
+            if target_channel and isinstance(target_channel,
+                                             discord.TextChannel):
                 try:
                     await target_channel.send(signal_message)
                     sent_channels.append(target_channel.name)
@@ -1706,85 +1777,83 @@ async def pair_autocomplete(interaction: discord.Interaction, current: str):
 
 
 @entry_command.autocomplete('channels')
-async def channels_autocomplete(interaction: discord.Interaction, current: str):
-    channel_choices = [
-        'Free channel',
-        'Premium channel', 
-        'Both',
-        'Testing'
-    ]
+async def channels_autocomplete(interaction: discord.Interaction,
+                                current: str):
+    channel_choices = ['Free channel', 'Premium channel', 'Both', 'Testing']
     return [
-        app_commands.Choice(name=choice, value=choice) for choice in channel_choices
-        if current.lower() in choice.lower()
+        app_commands.Choice(name=choice, value=choice)
+        for choice in channel_choices if current.lower() in choice.lower()
     ]
 
 
-@bot.tree.command(name="dbstatus", description="Check database connection and status")
+@bot.tree.command(name="dbstatus",
+                  description="Check database connection and status")
 async def database_status_command(interaction: discord.Interaction):
     """Check database connection status and show database information"""
-    
+
     await interaction.response.defer(ephemeral=True)
-    
+
     if not bot.db_pool:
         embed = discord.Embed(
             title="📊 Database Status",
-            description="❌ **Database not configured**\n\nThe bot is running without database persistence.\nMemory-based storage is being used instead.",
-            color=discord.Color.orange()
-        )
+            description=
+            "❌ **Database not configured**\n\nThe bot is running without database persistence.\nMemory-based storage is being used instead.",
+            color=discord.Color.orange())
         embed.add_field(
             name="💡 To Enable Database",
-            value="Add a PostgreSQL service to your Render deployment and set the DATABASE_URL environment variable.",
-            inline=False
-        )
+            value=
+            "Add a PostgreSQL service to your Render deployment and set the DATABASE_URL environment variable.",
+            inline=False)
         await interaction.followup.send(embed=embed)
         return
-    
+
     try:
         async with bot.db_pool.acquire() as conn:
             # Get database info
             version = await conn.fetchval('SELECT version()')
             current_time = await conn.fetchval('SELECT NOW()')
-            
+
             # Get table count
             table_count = await conn.fetchval("""
                 SELECT COUNT(*) FROM information_schema.tables 
                 WHERE table_schema = 'public'
             """)
-            
+
             # Get connection info
             pool_size = bot.db_pool.get_size()
             pool_idle = bot.db_pool.get_idle_size()
-            
+
             embed = discord.Embed(
                 title="📊 Database Status",
                 description="✅ **Database Connected & Working**",
-                color=discord.Color.green()
-            )
-            
+                color=discord.Color.green())
+
             embed.add_field(
                 name="🗄️ PostgreSQL Info",
-                value=f"Version: {version.split()[1]}\nServer Time: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-                inline=True
-            )
-            
+                value=
+                f"Version: {version.split()[1]}\nServer Time: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                inline=True)
+
             embed.add_field(
                 name="📊 Connection Pool",
-                value=f"Pool Size: {pool_size}\nIdle Connections: {pool_idle}\nActive: {pool_size - pool_idle}",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="📋 Tables",
-                value=f"Total Tables: {table_count}",
-                inline=True
-            )
-            
+                value=
+                f"Pool Size: {pool_size}\nIdle Connections: {pool_idle}\nActive: {pool_size - pool_idle}",
+                inline=True)
+
+            embed.add_field(name="📋 Tables",
+                            value=f"Total Tables: {table_count}",
+                            inline=True)
+
             # Check specific bot tables
-            bot_tables = ['role_history', 'active_members', 'weekend_pending', 'dm_schedule', 'auto_role_config']
+            bot_tables = [
+                'role_history', 'active_members', 'weekend_pending',
+                'dm_schedule', 'auto_role_config'
+            ]
             existing_tables = []
-            
+
             for table in bot_tables:
-                exists = await conn.fetchval("""
+                exists = await conn.fetchval(
+                    """
                     SELECT EXISTS (
                         SELECT FROM information_schema.tables 
                         WHERE table_schema = 'public' 
@@ -1793,33 +1862,32 @@ async def database_status_command(interaction: discord.Interaction):
                 """, table)
                 if exists:
                     existing_tables.append(table)
-            
+
             if existing_tables:
                 embed.add_field(
                     name="🤖 Bot Tables",
-                    value=f"Created: {len(existing_tables)}/{len(bot_tables)}\n" + "\n".join(f"✅ {table}" for table in existing_tables),
-                    inline=False
-                )
-            
-            embed.set_footer(text="Database is functioning properly for persistent memory storage")
-            
+                    value=f"Created: {len(existing_tables)}/{len(bot_tables)}\n"
+                    + "\n".join(f"✅ {table}" for table in existing_tables),
+                    inline=False)
+
+            embed.set_footer(
+                text=
+                "Database is functioning properly for persistent memory storage"
+            )
+
     except Exception as e:
-        embed = discord.Embed(
-            title="📊 Database Status",
-            description="❌ **Database Connection Error**",
-            color=discord.Color.red()
-        )
-        embed.add_field(
-            name="Error Details",
-            value=f"```{str(e)[:500]}```",
-            inline=False
-        )
+        embed = discord.Embed(title="📊 Database Status",
+                              description="❌ **Database Connection Error**",
+                              color=discord.Color.red())
+        embed.add_field(name="Error Details",
+                        value=f"```{str(e)[:500]}```",
+                        inline=False)
         embed.add_field(
             name="💡 Troubleshooting",
-            value="1. Check DATABASE_URL environment variable\n2. Verify PostgreSQL service is running\n3. Check network connectivity",
-            inline=False
-        )
-    
+            value=
+            "1. Check DATABASE_URL environment variable\n2. Verify PostgreSQL service is running\n3. Check network connectivity",
+            inline=False)
+
     await interaction.followup.send(embed=embed)
 
 
@@ -1944,11 +2012,11 @@ async def web_server():
     async def health_check(request):
         bot_status = "Connected" if bot.is_ready() else "Connecting"
         guild_count = len(bot.guilds) if bot.is_ready() else 0
-        
+
         # Check database connection status
         database_status = "Not configured"
         database_details = {}
-        
+
         if bot.db_pool:
             try:
                 async with bot.db_pool.acquire() as conn:
@@ -1956,13 +2024,14 @@ async def web_server():
                     version = await conn.fetchval('SELECT version()')
                     database_status = "Connected"
                     database_details = {
-                        "postgresql_version": version.split()[1] if version else "Unknown",
+                        "postgresql_version":
+                        version.split()[1] if version else "Unknown",
                         "pool_size": bot.db_pool.get_size(),
                         "pool_idle": bot.db_pool.get_idle_size()
                     }
             except Exception as e:
                 database_status = f"Error: {str(e)[:50]}"
-        
+
         response_data = {
             "status": "running",
             "bot_status": bot_status,
