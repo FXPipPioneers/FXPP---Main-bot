@@ -1,8 +1,0 @@
-discord.py==2.5.2
-python-dotenv==1.1.0
-aiohttp==3.12.13
-asyncpg==0.30.0
-pyrogram==2.0.106
-tgcrypto==1.2.5
-pytz>=2025.2
-requests>=2.32.4
