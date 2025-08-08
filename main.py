@@ -1213,7 +1213,28 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                 role = interaction.guild.get_role(
                     AUTO_ROLE_CONFIG["role_id"]
                 ) if interaction.guild and AUTO_ROLE_CONFIG["role_id"] else None
-                active_count = len(AUTO_ROLE_CONFIG["active_members"])
+                
+                # Count only members who actually have the role and aren't expired
+                actual_active_count = 0
+                for member_id, data in AUTO_ROLE_CONFIG["active_members"].items():
+                    try:
+                        # Check if member exists and has the role
+                        guild = interaction.guild
+                        if not guild:
+                            continue
+                        
+                        member = guild.get_member(int(member_id))
+                        if not member:
+                            continue
+                        
+                        # Check if member has the role and isn't expired
+                        if role and role in member.roles:
+                            time_display = get_remaining_time_display(member_id)
+                            if time_display is not None:  # Not expired
+                                actual_active_count += 1
+                    except Exception:
+                        continue
+                
                 weekend_pending_count = len(
                     AUTO_ROLE_CONFIG.get("weekend_pending", {}))
 
@@ -1223,7 +1244,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                 else:
                     status_message += f"• **Role:** Not found (ID: {AUTO_ROLE_CONFIG['role_id']})\n"
                 status_message += f"• **Duration:** 24 hours (fixed)\n"
-                status_message += f"• **Active members:** {active_count}\n"
+                status_message += f"• **Active members:** {actual_active_count}\n"
                 status_message += f"• **Weekend pending:** {weekend_pending_count}\n"
                 status_message += f"• **Weekend handling:** Enabled"
             else:
@@ -1247,6 +1268,11 @@ async def timed_auto_role_command(interaction: discord.Interaction,
 
             # Build the list of active members with precise time remaining
             member_list = []
+            
+            # Get the role object for checking
+            role = interaction.guild.get_role(
+                AUTO_ROLE_CONFIG["role_id"]
+            ) if interaction.guild and AUTO_ROLE_CONFIG["role_id"] else None
 
             for member_id, data in AUTO_ROLE_CONFIG["active_members"].items():
                 try:
@@ -1257,6 +1283,10 @@ async def timed_auto_role_command(interaction: discord.Interaction,
 
                     member = guild.get_member(int(member_id))
                     if not member:
+                        continue
+                    
+                    # Only show members who actually have the role
+                    if role and role not in member.roles:
                         continue
 
                     # Get precise remaining time
