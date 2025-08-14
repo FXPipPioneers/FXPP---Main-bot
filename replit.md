@@ -36,10 +36,27 @@ This is a professional Discord bot designed for trading signal distribution with
    - Win rate calculations
    - Multi-channel distribution
 
-3. **`/telegram` Command**: Check Telegram integration status
+3. **`/giveaway` Command**: Comprehensive giveaway management system
+   - Step-by-step setup: message, role, duration, winners
+   - Flexible duration (weeks, days, hours, minutes)
+   - Role-based entry requirements
+   - **`/giveaway list`**: View all active giveaways with details
+   - **`/giveaway choose_winners`**: Smart giveaway selection for guaranteed winners
+   - **`/giveaway end`**: Smart giveaway selection for manual ending
+   - Auto-guidance when giveaway ID not provided
+   - React-to-enter with automatic validation
+   - Professional embeds with all giveaway details
+   - Always posts to giveaway channel (1405490561963786271)
+
+4. **`/telegram` Command**: Check Telegram integration status
    - Configuration validation
    - Connection status
    - Setup guidance
+
+5. **`/dbstatus` Command**: Database health monitoring
+   - Connection status and pool information
+   - Table verification
+   - Performance metrics
 
 ### Trading Logic
 - **Pip Calculation Engine**: Instrument-specific pip value calculations
@@ -157,7 +174,32 @@ For the auto-role system to work, the bot needs:
 
 Preferred communication style: Simple, everyday language.
 
-## Recent Changes (August 1, 2025)
+## Recent Changes (August 14, 2025)
+
+✓ Fixed critical bot offline issues - added proper aiohttp client session cleanup to prevent unclosed session errors
+✓ Added comprehensive offline member recovery system - automatically catches up on members who joined while bot was offline
+✓ Implemented complete giveaway system with all requested features:
+  - Step-by-step giveaway creation (`/giveaway message`, `role`, `duration`, `winners`)
+  - Role-based entry requirements with automatic validation
+  - Flexible duration settings (weeks, days, hours, minutes)
+  - Guaranteed winner selection with `choose_winners` action
+  - Automatic giveaway ending with winner selection
+  - React-to-enter system with 🎉 emoji
+  - Automatic reaction removal for users without required roles
+  - Professional giveaway embeds with all details
+  - Always posts to designated giveaway channel (ID: 1405490561963786271)
+  - @everyone notification when giveaways are posted
+✓ Enhanced anti-abuse display filtering - role listing commands now only show users with active roles
+✓ Added comprehensive database monitoring with `/dbstatus` command
+✓ Fixed all indentation and syntax errors in giveaway system
+✓ Added automatic role validation and DM notifications for giveaway entries
+✓ Implemented proper giveaway scheduling and automatic cleanup
+✓ Enhanced giveaway management with smart active giveaway selection
+✓ Added `/giveaway list` command to view all active giveaways
+✓ Auto-guidance for choose_winners and end actions when giveaway ID not provided
+✓ Prevention of exceeding winner limits with guaranteed winners
+
+## Previous Changes (August 1, 2025)
 
 ✓ Fixed command sync reliability issues for 24/7 responsiveness
 ✓ Updated weekend message with new welcome text
