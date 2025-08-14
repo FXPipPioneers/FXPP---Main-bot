@@ -3090,6 +3090,10 @@ async def main():
     print(f"Bot token length: {len(DISCORD_TOKEN)} characters")
     print("Starting Discord Trading Bot...")
 
+    # Minimal startup delay to avoid overwhelming Discord
+    print("🕐 Adding minimal startup delay...")
+    await asyncio.sleep(5)  # Short delay
+
     # Create tasks for concurrent execution
     tasks = []
 
@@ -3098,10 +3102,10 @@ async def main():
     web_task = asyncio.create_task(web_server())
     tasks.append(web_task)
 
-    # Discord bot task with comprehensive error handling and debugging
+    # Discord bot task with minimal retries to prevent IP banning
     async def start_bot_with_retry():
-        max_retries = 5
-        retry_delay = 15  # seconds
+        max_retries = 1  # Only try once to prevent IP banning
+        retry_delay = 300  # 5 minutes between attempts
 
         print("🤖 DISCORD BOT STARTUP SEQUENCE:")
         print(f"   Bot object created: {bot is not None}")
@@ -3141,9 +3145,19 @@ async def main():
                 print(f"   Response: {getattr(e, 'response', 'No response')}")
                 
                 if e.status == 429:  # Rate limited
-                    print(f"   Rate limited by Discord. Waiting {retry_delay} seconds before retry...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    # Check if this is a Cloudflare rate limit (Error 1015)
+                    if "cloudflare" in str(e).lower() or "1015" in str(e):
+                        print("   🚨 CLOUDFLARE IP BAN DETECTED (Error 1015)")
+                        print("   Your Render server IP is banned by Discord's Cloudflare")
+                        print("   This requires a different approach - IP ban won't resolve with waiting")
+                        
+                        # Log the exact issue for user
+                        print("   ❌ CRITICAL: Bot cannot run 24/7 until IP ban is lifted")
+                        print("   💡 SOLUTION: Need to change server IP or hosting provider")
+                        break  # Don't retry - IP is banned
+                    else:
+                        print(f"   Normal rate limit. Waiting {retry_delay} seconds before retry...")
+                        await asyncio.sleep(retry_delay)
                 elif e.status == 401:  # Unauthorized
                     print("   401 Unauthorized - Invalid bot token")
                     break
