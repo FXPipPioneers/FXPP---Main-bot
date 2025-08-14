@@ -4,6 +4,7 @@ from discord import app_commands
 import os
 from dotenv import load_dotenv
 import asyncio
+import aiohttp
 from aiohttp import web
 import json
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,16 @@ load_dotenv()
 DISCORD_TOKEN_PART1 = os.getenv("DISCORD_TOKEN_PART1", "")
 DISCORD_TOKEN_PART2 = os.getenv("DISCORD_TOKEN_PART2", "")
 DISCORD_TOKEN = DISCORD_TOKEN_PART1 + DISCORD_TOKEN_PART2
+
+# Debug token loading
+if not DISCORD_TOKEN_PART1:
+    print("⚠️ DISCORD_TOKEN_PART1 is empty or not found")
+if not DISCORD_TOKEN_PART2:
+    print("⚠️ DISCORD_TOKEN_PART2 is empty or not found")
+if DISCORD_TOKEN:
+    print(f"✅ Discord token assembled successfully (length: {len(DISCORD_TOKEN)})")
+else:
+    print("❌ Failed to assemble Discord token")
 
 DISCORD_CLIENT_ID_PART1 = os.getenv("DISCORD_CLIENT_ID_PART1", "")
 DISCORD_CLIENT_ID_PART2 = os.getenv("DISCORD_CLIENT_ID_PART2", "")
@@ -96,6 +107,7 @@ class TradingBot(commands.Bot):
         self.db_pool = None
         self.client_session = None
         self.last_online_time = None
+        self.last_heartbeat = None
 
     async def log_to_discord(self, message):
         """Send log message to Discord channel"""
@@ -109,6 +121,14 @@ class TradingBot(commands.Bot):
     
     async def close(self):
         """Cleanup when bot shuts down"""
+        # Record offline time for recovery
+        self.last_online_time = datetime.now(AMSTERDAM_TZ)
+        if self.db_pool:
+            try:
+                await self.save_bot_status()
+            except Exception as e:
+                print(f"Failed to save bot status: {e}")
+        
         # Close aiohttp client session to prevent unclosed client session warnings
         if self.client_session:
             await self.client_session.close()
@@ -121,6 +141,37 @@ class TradingBot(commands.Bot):
         
         # Call parent close
         await super().close()
+    
+    async def save_bot_status(self):
+        """Save bot status to database for offline recovery"""
+        if not self.db_pool:
+            return
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                current_time = datetime.now(AMSTERDAM_TZ)
+                await conn.execute("""
+                    INSERT INTO bot_status (last_online, heartbeat_time) 
+                    VALUES ($1, $2)
+                    ON CONFLICT (id) DO UPDATE SET 
+                    last_online = $1, heartbeat_time = $2
+                """, current_time, current_time)
+        except Exception as e:
+            print(f"Failed to save bot status: {e}")
+    
+    async def load_bot_status(self):
+        """Load last known bot status from database"""
+        if not self.db_pool:
+            return
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                result = await conn.fetchrow("SELECT last_online FROM bot_status WHERE id = 1")
+                if result:
+                    self.last_online_time = result['last_online']
+                    print(f"✅ Loaded last online time: {self.last_online_time}")
+        except Exception as e:
+            print(f"Failed to load bot status: {e}")
     
     async def recover_offline_members(self):
         """Check for members who joined while bot was offline and assign auto-roles"""
@@ -247,6 +298,99 @@ class TradingBot(commands.Bot):
             await self.log_to_discord(f"❌ Error during offline member recovery: {str(e)}")
             print(f"Offline recovery error: {e}")
 
+    async def recover_offline_dm_reminders(self):
+        """Check for DM reminders that should have been sent while bot was offline"""
+        if not AUTO_ROLE_CONFIG["enabled"] or not self.db_pool:
+            return
+            
+        try:
+            await self.log_to_discord("🔍 Checking for missed DM reminders while offline...")
+            
+            current_time = datetime.now(AMSTERDAM_TZ)
+            recovered_dms = 0
+            
+            # Check all members in DM schedule for missed reminders
+            for member_id_str, dm_data in AUTO_ROLE_CONFIG["dm_schedule"].items():
+                try:
+                    role_expired = datetime.fromisoformat(dm_data["role_expired"]).replace(tzinfo=AMSTERDAM_TZ)
+                    guild_id = dm_data["guild_id"]
+                    
+                    # Calculate when each DM should have been sent
+                    dm_3_time = role_expired + timedelta(days=3)
+                    dm_7_time = role_expired + timedelta(days=7)
+                    dm_14_time = role_expired + timedelta(days=14)
+                    
+                    guild = self.get_guild(guild_id)
+                    if not guild:
+                        continue
+                        
+                    member = guild.get_member(int(member_id_str))
+                    if not member:
+                        continue
+                    
+                    # Check if member has Gold Pioneer role (skip DMs if they do)
+                    if any(role.id == GOLD_PIONEER_ROLE_ID for role in member.roles):
+                        continue
+                    
+                    # Send missed 3-day DM
+                    if not dm_data["dm_3_sent"] and current_time >= dm_3_time:
+                        try:
+                            dm_message = "👋 **Hey there!** We noticed your 24-hour premium access to our signals has expired. We'd love to have you back! Consider upgrading to our **@Gold Pioneer** membership for unlimited access to our premium signals and exclusive trading insights. 💎"
+                            await member.send(dm_message)
+                            AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_3_sent"] = True
+                            recovered_dms += 1
+                            await self.log_to_discord(f"📤 Sent missed 3-day DM to {member.display_name}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"❌ Could not send missed 3-day DM to {member.display_name} (DMs disabled)")
+                    
+                    # Send missed 7-day DM
+                    if not dm_data["dm_7_sent"] and current_time >= dm_7_time:
+                        try:
+                            dm_message = "📈 **A week has passed!** We hope you're still enjoying our free signals in the main channel. Ready to take your trading to the next level? **@Gold Pioneer** members get access to our most profitable setups with detailed analysis. Join the winning team! 🏆"
+                            await member.send(dm_message)
+                            AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_7_sent"] = True
+                            recovered_dms += 1
+                            await self.log_to_discord(f"📤 Sent missed 7-day DM to {member.display_name}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"❌ Could not send missed 7-day DM to {member.display_name} (DMs disabled)")
+                    
+                    # Send missed 14-day DM
+                    if not dm_data["dm_14_sent"] and current_time >= dm_14_time:
+                        try:
+                            dm_message = "🎯 **Two weeks of free signals!** We hope you've seen the quality of our trading calls. This is your final invitation to join **@Gold Pioneer** and unlock our premium strategy breakdowns, market analysis, and exclusive high-probability setups. Don't miss out on maximizing your trading potential! 💰"
+                            await member.send(dm_message)
+                            AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_14_sent"] = True
+                            recovered_dms += 1
+                            await self.log_to_discord(f"📤 Sent missed 14-day DM to {member.display_name}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"❌ Could not send missed 14-day DM to {member.display_name} (DMs disabled)")
+                    
+                except Exception as e:
+                    await self.log_to_discord(f"❌ Error processing missed DM for member {member_id_str}: {str(e)}")
+                    continue
+            
+            # Save updated DM schedule
+            await self.save_auto_role_config()
+            
+            if recovered_dms > 0:
+                await self.log_to_discord(f"📬 Successfully sent {recovered_dms} missed DM reminders!")
+            else:
+                await self.log_to_discord("✅ No missed DM reminders found")
+                
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error during offline DM recovery: {str(e)}")
+            print(f"Offline DM recovery error: {e}")
+
+    @tasks.loop(minutes=30)
+    async def heartbeat_task(self):
+        """Periodic heartbeat to track bot uptime and save status"""
+        if self.db_pool:
+            try:
+                await self.save_bot_status()
+                self.last_heartbeat = datetime.now(AMSTERDAM_TZ)
+            except Exception as e:
+                print(f"Heartbeat error: {e}")
+
     async def init_database(self):
         """Initialize database connection and create tables"""
         try:
@@ -330,10 +474,23 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Bot status table for offline recovery
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS bot_status (
+                        id INTEGER PRIMARY KEY DEFAULT 1,
+                        last_online TIMESTAMP WITH TIME ZONE,
+                        heartbeat_time TIMESTAMP WITH TIME ZONE,
+                        CONSTRAINT single_row_constraint UNIQUE (id)
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
             await self.load_config_from_db()
+            
+            # Load bot status for offline recovery
+            await self.load_bot_status()
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -515,6 +672,16 @@ class TradingBot(commands.Bot):
         
         # Check for offline members who joined while bot was offline
         await self.recover_offline_members()
+        
+        # Check for missed DM reminders while bot was offline
+        await self.recover_offline_dm_reminders()
+        
+        # Update bot status and start heartbeat
+        if self.db_pool:
+            await self.save_bot_status()
+            if not hasattr(self, 'heartbeat_task_started'):
+                self.heartbeat_task.start()
+                self.heartbeat_task_started = True
 
     def is_weekend_time(self, dt=None):
         """Check if the given datetime (or now) falls within weekend trading closure"""
@@ -2784,7 +2951,8 @@ async def stats_command(interaction: discord.Interaction,
 # Web server for health checks
 async def web_server():
     """Simple web server for health checks and keeping the service alive"""
-
+    runner = None
+    
     async def health_check(request):
         bot_status = "Connected" if bot.is_ready() else "Connecting"
         guild_count = len(bot.guilds) if bot.is_ready() else 0
@@ -2815,7 +2983,8 @@ async def web_server():
             "database_status": database_status,
             "database_details": database_details,
             "uptime": str(datetime.now()),
-            "version": "2.0"
+            "version": "2.1",
+            "last_heartbeat": str(bot.last_heartbeat) if hasattr(bot, 'last_heartbeat') and bot.last_heartbeat else "N/A"
         }
 
         return web.json_response(response_data, status=200)
@@ -2836,23 +3005,32 @@ async def web_server():
         print("✅ Web server started successfully on port 5000")
         print("Health check available at: http://0.0.0.0:5000/health")
 
-        # Keep the server running
-        while True:
-            await asyncio.sleep(3600)  # Sleep for 1 hour, then continue
+        try:
+            # Keep the server running
+            while True:
+                await asyncio.sleep(3600)  # Sleep for 1 hour, then continue
+        except asyncio.CancelledError:
+            print("Web server shutting down...")
+        finally:
+            # Cleanup web server properly
+            await runner.cleanup()
+            print("✅ Web server cleaned up properly")
 
     except Exception as e:
         print(f"❌ Failed to start web server: {e}")
+        if runner:
+            await runner.cleanup()
         raise
 
 
 async def main():
     """Main async function to run both web server and Discord bot concurrently"""
     # Check if Discord token is available
-    if not DISCORD_TOKEN:
+    if not DISCORD_TOKEN or len(DISCORD_TOKEN) < 50:
         print("Error: DISCORD_TOKEN not found in environment variables")
-        print(
-            "Please set DISCORD_TOKEN_PART1 and DISCORD_TOKEN_PART2 environment variables"
-        )
+        print(f"Token parts found: PART1={bool(DISCORD_TOKEN_PART1)}, PART2={bool(DISCORD_TOKEN_PART2)}")
+        print(f"Assembled token length: {len(DISCORD_TOKEN) if DISCORD_TOKEN else 0}")
+        print("Please set DISCORD_TOKEN_PART1 and DISCORD_TOKEN_PART2 environment variables")
         return
 
     print(f"Bot token length: {len(DISCORD_TOKEN)} characters")
