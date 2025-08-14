@@ -40,15 +40,24 @@ DISCORD_TOKEN_PART1 = os.getenv("DISCORD_TOKEN_PART1", "")
 DISCORD_TOKEN_PART2 = os.getenv("DISCORD_TOKEN_PART2", "")
 DISCORD_TOKEN = DISCORD_TOKEN_PART1 + DISCORD_TOKEN_PART2
 
-# Debug token loading
+# Debug token loading with detailed information
+print("🔍 DEBUGGING DISCORD TOKEN LOADING:")
+print(f"   DISCORD_TOKEN_PART1 exists: {bool(DISCORD_TOKEN_PART1)}")
+print(f"   DISCORD_TOKEN_PART1 length: {len(DISCORD_TOKEN_PART1) if DISCORD_TOKEN_PART1 else 0}")
+print(f"   DISCORD_TOKEN_PART2 exists: {bool(DISCORD_TOKEN_PART2)}")
+print(f"   DISCORD_TOKEN_PART2 length: {len(DISCORD_TOKEN_PART2) if DISCORD_TOKEN_PART2 else 0}")
+print(f"   Combined token length: {len(DISCORD_TOKEN) if DISCORD_TOKEN else 0}")
+
 if not DISCORD_TOKEN_PART1:
-    print("⚠️ DISCORD_TOKEN_PART1 is empty or not found")
+    print("❌ DISCORD_TOKEN_PART1 is empty or not found")
 if not DISCORD_TOKEN_PART2:
-    print("⚠️ DISCORD_TOKEN_PART2 is empty or not found")
-if DISCORD_TOKEN:
+    print("❌ DISCORD_TOKEN_PART2 is empty or not found")
+if DISCORD_TOKEN and len(DISCORD_TOKEN) > 50:
     print(f"✅ Discord token assembled successfully (length: {len(DISCORD_TOKEN)})")
+    print(f"   Token starts with: {DISCORD_TOKEN[:10]}...")
+    print(f"   Token ends with: ...{DISCORD_TOKEN[-10:]}")
 else:
-    print("❌ Failed to assemble Discord token")
+    print("❌ Failed to assemble Discord token or token too short")
 
 DISCORD_CLIENT_ID_PART1 = os.getenv("DISCORD_CLIENT_ID_PART1", "")
 DISCORD_CLIENT_ID_PART2 = os.getenv("DISCORD_CLIENT_ID_PART2", "")
@@ -619,9 +628,16 @@ class TradingBot(commands.Bot):
         await self.init_database()
 
     async def on_ready(self):
-        print(f'{self.user} has landed!')
-        if self.user:
-            print(f'Bot ID: {self.user.id}')
+        print("🎉 DISCORD BOT READY EVENT TRIGGERED!")
+        print(f"   Bot user: {self.user}")
+        print(f"   Bot ID: {self.user.id if self.user else 'None'}")
+        print(f"   Bot discriminator: {self.user.discriminator if self.user else 'None'}")
+        print(f"   Connected guilds: {len(self.guilds)}")
+        for guild in self.guilds:
+            print(f"     - {guild.name} (ID: {guild.id})")
+        print(f"   Latency: {round(self.latency * 1000)}ms")
+        print(f"   Is ready: {self.is_ready()}")
+        print(f"   Is closed: {self.is_closed()}")
 
         # Force command sync on ready for better reliability
         if not getattr(self, 'first_sync_done', False):
@@ -682,6 +698,36 @@ class TradingBot(commands.Bot):
             if not hasattr(self, 'heartbeat_task_started'):
                 self.heartbeat_task.start()
                 self.heartbeat_task_started = True
+
+    async def on_connect(self):
+        """Called when bot connects to Discord"""
+        print("🔗 DISCORD CONNECTION ESTABLISHED!")
+        print(f"   Connected as: {self.user}")
+        print(f"   Connection time: {datetime.now()}")
+        print(f"   Latency: {round(self.latency * 1000)}ms")
+
+    async def on_disconnect(self):
+        """Called when bot disconnects from Discord"""
+        print("🔌 DISCORD CONNECTION LOST!")
+        print(f"   Disconnection time: {datetime.now()}")
+
+    async def on_resumed(self):
+        """Called when bot resumes connection to Discord"""
+        print("🔄 DISCORD CONNECTION RESUMED!")
+        print(f"   Resume time: {datetime.now()}")
+
+    async def on_error(self, event, *args, **kwargs):
+        """Called when an error occurs"""
+        print(f"❌ DISCORD BOT ERROR in event '{event}':")
+        import traceback
+        traceback.print_exc()
+        
+        # Try to log to Discord channel if available
+        if self.log_channel:
+            try:
+                await self.log_channel.send(f"❌ Bot Error in event '{event}': {str(args[0]) if args else 'Unknown error'}")
+            except Exception:
+                pass
 
     def is_weekend_time(self, dt=None):
         """Check if the given datetime (or now) falls within weekend trading closure"""
@@ -2979,12 +3025,20 @@ async def web_server():
         response_data = {
             "status": "running",
             "bot_status": bot_status,
+            "bot_user": str(bot.user) if bot.user else "Not logged in",
+            "bot_id": bot.user.id if bot.user else None,
             "guild_count": guild_count,
+            "guild_names": [guild.name for guild in bot.guilds] if bot.is_ready() else [],
             "database_status": database_status,
             "database_details": database_details,
             "uptime": str(datetime.now()),
             "version": "2.1",
-            "last_heartbeat": str(bot.last_heartbeat) if hasattr(bot, 'last_heartbeat') and bot.last_heartbeat else "N/A"
+            "last_heartbeat": str(bot.last_heartbeat) if hasattr(bot, 'last_heartbeat') and bot.last_heartbeat else "N/A",
+            "bot_latency": f"{round(bot.latency * 1000)}ms" if bot.is_ready() else "N/A",
+            "is_ready": bot.is_ready(),
+            "is_closed": bot.is_closed(),
+            "token_length": len(DISCORD_TOKEN) if DISCORD_TOKEN else 0,
+            "intents": str(bot.intents) if hasattr(bot, 'intents') else "N/A"
         }
 
         return web.json_response(response_data, status=200)
@@ -3044,43 +3098,99 @@ async def main():
     web_task = asyncio.create_task(web_server())
     tasks.append(web_task)
 
-    # Discord bot task with proper error handling
+    # Discord bot task with comprehensive error handling and debugging
     async def start_bot_with_retry():
-        max_retries = 3
-        retry_delay = 30  # seconds
+        max_retries = 5
+        retry_delay = 15  # seconds
 
+        print("🤖 DISCORD BOT STARTUP SEQUENCE:")
+        print(f"   Bot object created: {bot is not None}")
+        print(f"   Bot user: {bot.user}")
+        print(f"   Intents: {bot.intents}")
+        
         for attempt in range(max_retries):
             try:
-                print(
-                    f"Starting Discord bot (attempt {attempt + 1}/{max_retries})..."
-                )
+                print(f"🚀 Starting Discord bot (attempt {attempt + 1}/{max_retries})...")
+                print(f"   Using token length: {len(DISCORD_TOKEN)}")
+                print(f"   Bot is closed: {bot.is_closed()}")
+                
+                # Test token format before attempting connection
+                if not DISCORD_TOKEN or len(DISCORD_TOKEN) < 50:
+                    raise ValueError("Invalid Discord token format or length")
+                
+                if not DISCORD_TOKEN.count('.') >= 2:
+                    raise ValueError("Discord token format invalid - should contain at least 2 dots")
+                
+                print("   Token format validation passed")
+                print("   Attempting Discord connection...")
+                
                 await bot.start(DISCORD_TOKEN)
+                print("✅ Discord bot started successfully!")
                 break  # If successful, break out of retry loop
+                
             except discord.LoginFailure as e:
-                print(f"Discord login failed: {e}")
-                print("Please check your Discord bot token")
+                print(f"❌ DISCORD LOGIN FAILURE: {e}")
+                print("   This indicates invalid bot token")
+                print("   Please verify your Discord bot token is correct")
+                print(f"   Token being used starts with: {DISCORD_TOKEN[:20]}...")
                 break  # Don't retry on login failures
+                
             except discord.HTTPException as e:
+                print(f"❌ DISCORD HTTP ERROR: {e}")
+                print(f"   Status code: {getattr(e, 'status', 'Unknown')}")
+                print(f"   Response: {getattr(e, 'response', 'No response')}")
+                
                 if e.status == 429:  # Rate limited
-                    print(
-                        f"Rate limited by Discord. Waiting {retry_delay} seconds before retry..."
-                    )
+                    print(f"   Rate limited by Discord. Waiting {retry_delay} seconds before retry...")
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
+                elif e.status == 401:  # Unauthorized
+                    print("   401 Unauthorized - Invalid bot token")
+                    break
+                elif e.status == 403:  # Forbidden
+                    print("   403 Forbidden - Bot may be banned or token invalid")
+                    break
                 else:
-                    print(f"Discord HTTP error: {e}")
+                    print(f"   HTTP error {e.status}")
                     if attempt < max_retries - 1:
-                        print(f"Retrying in {retry_delay} seconds...")
+                        print(f"   Retrying in {retry_delay} seconds...")
                         await asyncio.sleep(retry_delay)
                     else:
-                        print("Max retries reached. Bot failed to start.")
-            except Exception as e:
-                print(f"Unexpected error starting Discord bot: {e}")
+                        print("   Max retries reached. Bot failed to start.")
+                        
+            except discord.ConnectionClosed as e:
+                print(f"❌ DISCORD CONNECTION CLOSED: {e}")
+                print(f"   Code: {getattr(e, 'code', 'Unknown')}")
+                print(f"   Reason: {getattr(e, 'reason', 'Unknown')}")
                 if attempt < max_retries - 1:
-                    print(f"Retrying in {retry_delay} seconds...")
+                    print(f"   Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    
+            except discord.GatewayNotFound as e:
+                print(f"❌ DISCORD GATEWAY NOT FOUND: {e}")
+                print("   Discord gateway endpoint not found")
+                if attempt < max_retries - 1:
+                    print(f"   Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    
+            except ValueError as e:
+                print(f"❌ TOKEN VALIDATION ERROR: {e}")
+                break  # Don't retry on token validation errors
+                
+            except Exception as e:
+                print(f"❌ UNEXPECTED ERROR STARTING DISCORD BOT: {e}")
+                print(f"   Error type: {type(e).__name__}")
+                print(f"   Error details: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                
+                if attempt < max_retries - 1:
+                    print(f"   Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
                 else:
-                    print("Max retries reached. Bot failed to start.")
+                    print("   Max retries reached. Bot failed to start.")
+        
+        print("🔚 Bot startup sequence completed")
 
     bot_task = asyncio.create_task(start_bot_with_retry())
     tasks.append(bot_task)
