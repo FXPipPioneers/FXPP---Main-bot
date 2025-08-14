@@ -4,6 +4,7 @@ from discord import app_commands
 import os
 from dotenv import load_dotenv
 import asyncio
+import aiohttp
 from aiohttp import web
 import json
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,16 @@ DISCORD_TOKEN_PART1 = os.getenv("DISCORD_TOKEN_PART1", "")
 DISCORD_TOKEN_PART2 = os.getenv("DISCORD_TOKEN_PART2", "")
 DISCORD_TOKEN = DISCORD_TOKEN_PART1 + DISCORD_TOKEN_PART2
 
+# Debug token loading
+if not DISCORD_TOKEN_PART1:
+    print("⚠️ DISCORD_TOKEN_PART1 is empty or not found")
+if not DISCORD_TOKEN_PART2:
+    print("⚠️ DISCORD_TOKEN_PART2 is empty or not found")
+if DISCORD_TOKEN:
+    print(f"✅ Discord token assembled successfully (length: {len(DISCORD_TOKEN)})")
+else:
+    print("❌ Failed to assemble Discord token")
+
 DISCORD_CLIENT_ID_PART1 = os.getenv("DISCORD_CLIENT_ID_PART1", "")
 DISCORD_CLIENT_ID_PART2 = os.getenv("DISCORD_CLIENT_ID_PART2", "")
 DISCORD_CLIENT_ID = DISCORD_CLIENT_ID_PART1 + DISCORD_CLIENT_ID_PART2
@@ -72,6 +83,12 @@ LOG_CHANNEL_ID = 1350888185487429642
 # Gold Pioneer role ID for checking membership before sending follow-up DMs
 GOLD_PIONEER_ROLE_ID = 1384489575187091466
 
+# Giveaway channel ID (always post giveaways here)
+GIVEAWAY_CHANNEL_ID = 1405490561963786271
+
+# Global storage for active giveaways
+ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
+
 # Amsterdam timezone handling with fallback
 if PYTZ_AVAILABLE:
     AMSTERDAM_TZ = pytz.timezone(
@@ -88,6 +105,9 @@ class TradingBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
         self.log_channel = None
         self.db_pool = None
+        self.client_session = None
+        self.last_online_time = None
+        self.last_heartbeat = None
 
     async def log_to_discord(self, message):
         """Send log message to Discord channel"""
@@ -98,6 +118,278 @@ class TradingBot(commands.Bot):
                 print(f"Failed to send log to Discord: {e}")
         # Always print to console as backup
         print(message)
+    
+    async def close(self):
+        """Cleanup when bot shuts down"""
+        # Record offline time for recovery
+        self.last_online_time = datetime.now(AMSTERDAM_TZ)
+        if self.db_pool:
+            try:
+                await self.save_bot_status()
+            except Exception as e:
+                print(f"Failed to save bot status: {e}")
+        
+        # Close aiohttp client session to prevent unclosed client session warnings
+        if self.client_session:
+            await self.client_session.close()
+            print("✅ Aiohttp client session closed properly")
+        
+        # Close database pool
+        if self.db_pool:
+            await self.db_pool.close()
+            print("✅ Database connection pool closed")
+        
+        # Call parent close
+        await super().close()
+    
+    async def save_bot_status(self):
+        """Save bot status to database for offline recovery"""
+        if not self.db_pool:
+            return
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                current_time = datetime.now(AMSTERDAM_TZ)
+                await conn.execute("""
+                    INSERT INTO bot_status (last_online, heartbeat_time) 
+                    VALUES ($1, $2)
+                    ON CONFLICT (id) DO UPDATE SET 
+                    last_online = $1, heartbeat_time = $2
+                """, current_time, current_time)
+        except Exception as e:
+            print(f"Failed to save bot status: {e}")
+    
+    async def load_bot_status(self):
+        """Load last known bot status from database"""
+        if not self.db_pool:
+            return
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                result = await conn.fetchrow("SELECT last_online FROM bot_status WHERE id = 1")
+                if result:
+                    self.last_online_time = result['last_online']
+                    print(f"✅ Loaded last online time: {self.last_online_time}")
+        except Exception as e:
+            print(f"Failed to load bot status: {e}")
+    
+    async def recover_offline_members(self):
+        """Check for members who joined while bot was offline and assign auto-roles"""
+        if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG["role_id"]:
+            return
+            
+        try:
+            await self.log_to_discord("🔍 Checking for members who joined while bot was offline...")
+            
+            # Get the last known online time from database or use current time - 24 hours as fallback
+            offline_check_time = self.last_online_time
+            if not offline_check_time:
+                # If we don't know when we were last online, check last 24 hours as safety measure
+                offline_check_time = datetime.now(AMSTERDAM_TZ) - timedelta(hours=24)
+            
+            recovered_count = 0
+            
+            for guild in self.guilds:
+                if not guild:
+                    continue
+                
+                role = guild.get_role(AUTO_ROLE_CONFIG["role_id"])
+                if not role:
+                    continue
+                
+                # Get all members and check join times
+                async for member in guild.fetch_members(limit=None):
+                    if member.bot:  # Skip bots
+                        continue
+                    
+                    member_id_str = str(member.id)
+                    
+                    # Check if member joined after we went offline
+                    if member.joined_at and member.joined_at.replace(tzinfo=timezone.utc) > offline_check_time.astimezone(timezone.utc):
+                        
+                        # Check if they already have the role or are already tracked
+                        if member_id_str in AUTO_ROLE_CONFIG["active_members"]:
+                            continue  # Already tracked
+                        
+                        if role in member.roles:
+                            continue  # Already has role
+                        
+                        # Check anti-abuse system
+                        if member_id_str in AUTO_ROLE_CONFIG["role_history"]:
+                            await self.log_to_discord(
+                                f"🚫 {member.display_name} joined while offline but blocked by anti-abuse system"
+                            )
+                            continue
+                        
+                        # Process this offline joiner
+                        join_time = member.joined_at.astimezone(AMSTERDAM_TZ)
+                        
+                        # Add the role
+                        await member.add_roles(role, reason="Auto-role recovery for offline join")
+                        
+                        # Determine if it was weekend when they joined
+                        if self.is_weekend_time(join_time):
+                            # Weekend join - expires Monday 23:59
+                            monday_expiry = self.get_monday_expiry_time(join_time)
+                            
+                            AUTO_ROLE_CONFIG["active_members"][member_id_str] = {
+                                "role_added_time": join_time.isoformat(),
+                                "role_id": AUTO_ROLE_CONFIG["role_id"],
+                                "guild_id": guild.id,
+                                "weekend_delayed": True,
+                                "expiry_time": monday_expiry.isoformat()
+                            }
+                            
+                            # Send weekend DM
+                            try:
+                                weekend_message = (
+                                    "**Welcome to FX Pip Pioneers!** As a welcome gift, we usually give our new members "
+                                    "**access to the Premium Signals channel for 24 hours.** However, the trading markets are currently closed for the weekend. "
+                                    "**Your 24-hour countdown will start on Monday at 00:01 Amsterdam time** and your premium access will expire on Tuesday at 01:00 Amsterdam time. "
+                                    "Good luck trading!"
+                                )
+                                await member.send(weekend_message)
+                            except discord.Forbidden:
+                                await self.log_to_discord(f"❌ Could not send weekend DM to {member.display_name} (DMs disabled)")
+                            
+                        else:
+                            # Regular join - 24 hours from join time
+                            expiry_time = join_time + timedelta(hours=24)
+                            
+                            AUTO_ROLE_CONFIG["active_members"][member_id_str] = {
+                                "role_added_time": join_time.isoformat(),
+                                "role_id": AUTO_ROLE_CONFIG["role_id"],
+                                "guild_id": guild.id,
+                                "weekend_delayed": False,
+                                "expiry_time": expiry_time.isoformat()
+                            }
+                            
+                            # Send regular welcome DM
+                            try:
+                                welcome_message = (
+                                    "**Welcome to FX Pip Pioneers!** As a welcome gift, we've given you "
+                                    "**access to the Premium Signals channel for 24 hours.** "
+                                    "Good luck trading!"
+                                )
+                                await member.send(welcome_message)
+                            except discord.Forbidden:
+                                await self.log_to_discord(f"❌ Could not send welcome DM to {member.display_name} (DMs disabled)")
+                        
+                        # Record in role history for anti-abuse
+                        AUTO_ROLE_CONFIG["role_history"][member_id_str] = {
+                            "first_granted": join_time.isoformat(),
+                            "times_granted": 1,
+                            "last_expired": None,
+                            "guild_id": guild.id
+                        }
+                        
+                        recovered_count += 1
+                        await self.log_to_discord(f"✅ Recovered offline joiner: {member.display_name}")
+            
+            # Save the updated configuration
+            await self.save_auto_role_config()
+            
+            if recovered_count > 0:
+                await self.log_to_discord(f"🎯 Successfully recovered {recovered_count} members who joined while bot was offline!")
+            else:
+                await self.log_to_discord("✅ No offline members found to recover")
+                
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error during offline member recovery: {str(e)}")
+            print(f"Offline recovery error: {e}")
+
+    async def recover_offline_dm_reminders(self):
+        """Check for DM reminders that should have been sent while bot was offline"""
+        if not AUTO_ROLE_CONFIG["enabled"] or not self.db_pool:
+            return
+            
+        try:
+            await self.log_to_discord("🔍 Checking for missed DM reminders while offline...")
+            
+            current_time = datetime.now(AMSTERDAM_TZ)
+            recovered_dms = 0
+            
+            # Check all members in DM schedule for missed reminders
+            for member_id_str, dm_data in AUTO_ROLE_CONFIG["dm_schedule"].items():
+                try:
+                    role_expired = datetime.fromisoformat(dm_data["role_expired"]).replace(tzinfo=AMSTERDAM_TZ)
+                    guild_id = dm_data["guild_id"]
+                    
+                    # Calculate when each DM should have been sent
+                    dm_3_time = role_expired + timedelta(days=3)
+                    dm_7_time = role_expired + timedelta(days=7)
+                    dm_14_time = role_expired + timedelta(days=14)
+                    
+                    guild = self.get_guild(guild_id)
+                    if not guild:
+                        continue
+                        
+                    member = guild.get_member(int(member_id_str))
+                    if not member:
+                        continue
+                    
+                    # Check if member has Gold Pioneer role (skip DMs if they do)
+                    if any(role.id == GOLD_PIONEER_ROLE_ID for role in member.roles):
+                        continue
+                    
+                    # Send missed 3-day DM
+                    if not dm_data["dm_3_sent"] and current_time >= dm_3_time:
+                        try:
+                            dm_message = "👋 **Hey there!** We noticed your 24-hour premium access to our signals has expired. We'd love to have you back! Consider upgrading to our **@Gold Pioneer** membership for unlimited access to our premium signals and exclusive trading insights. 💎"
+                            await member.send(dm_message)
+                            AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_3_sent"] = True
+                            recovered_dms += 1
+                            await self.log_to_discord(f"📤 Sent missed 3-day DM to {member.display_name}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"❌ Could not send missed 3-day DM to {member.display_name} (DMs disabled)")
+                    
+                    # Send missed 7-day DM
+                    if not dm_data["dm_7_sent"] and current_time >= dm_7_time:
+                        try:
+                            dm_message = "📈 **A week has passed!** We hope you're still enjoying our free signals in the main channel. Ready to take your trading to the next level? **@Gold Pioneer** members get access to our most profitable setups with detailed analysis. Join the winning team! 🏆"
+                            await member.send(dm_message)
+                            AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_7_sent"] = True
+                            recovered_dms += 1
+                            await self.log_to_discord(f"📤 Sent missed 7-day DM to {member.display_name}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"❌ Could not send missed 7-day DM to {member.display_name} (DMs disabled)")
+                    
+                    # Send missed 14-day DM
+                    if not dm_data["dm_14_sent"] and current_time >= dm_14_time:
+                        try:
+                            dm_message = "🎯 **Two weeks of free signals!** We hope you've seen the quality of our trading calls. This is your final invitation to join **@Gold Pioneer** and unlock our premium strategy breakdowns, market analysis, and exclusive high-probability setups. Don't miss out on maximizing your trading potential! 💰"
+                            await member.send(dm_message)
+                            AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_14_sent"] = True
+                            recovered_dms += 1
+                            await self.log_to_discord(f"📤 Sent missed 14-day DM to {member.display_name}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"❌ Could not send missed 14-day DM to {member.display_name} (DMs disabled)")
+                    
+                except Exception as e:
+                    await self.log_to_discord(f"❌ Error processing missed DM for member {member_id_str}: {str(e)}")
+                    continue
+            
+            # Save updated DM schedule
+            await self.save_auto_role_config()
+            
+            if recovered_dms > 0:
+                await self.log_to_discord(f"📬 Successfully sent {recovered_dms} missed DM reminders!")
+            else:
+                await self.log_to_discord("✅ No missed DM reminders found")
+                
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error during offline DM recovery: {str(e)}")
+            print(f"Offline DM recovery error: {e}")
+
+    @tasks.loop(minutes=30)
+    async def heartbeat_task(self):
+        """Periodic heartbeat to track bot uptime and save status"""
+        if self.db_pool:
+            try:
+                await self.save_bot_status()
+                self.last_heartbeat = datetime.now(AMSTERDAM_TZ)
+            except Exception as e:
+                print(f"Heartbeat error: {e}")
 
     async def init_database(self):
         """Initialize database connection and create tables"""
@@ -182,10 +474,23 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Bot status table for offline recovery
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS bot_status (
+                        id INTEGER PRIMARY KEY DEFAULT 1,
+                        last_online TIMESTAMP WITH TIME ZONE,
+                        heartbeat_time TIMESTAMP WITH TIME ZONE,
+                        CONSTRAINT single_row_constraint UNIQUE (id)
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
             await self.load_config_from_db()
+            
+            # Load bot status for offline recovery
+            await self.load_bot_status()
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -279,6 +584,12 @@ class TradingBot(commands.Bot):
             print(f"❌ Failed to load config from database: {e}")
 
     async def setup_hook(self):
+        # Initialize aiohttp client session (fixes unclosed client session errors)
+        self.client_session = aiohttp.ClientSession()
+        
+        # Record bot startup time for offline recovery
+        self.last_online_time = datetime.now(AMSTERDAM_TZ)
+        
         # Sync slash commands with retry mechanism for better reliability
         max_retries = 3
         for attempt in range(max_retries):
@@ -358,6 +669,19 @@ class TradingBot(commands.Bot):
                     f"❌ Error caching invites for {guild.name}: {e}")
 
         await self.log_to_discord("⚠️ Telegram integration not configured")
+        
+        # Check for offline members who joined while bot was offline
+        await self.recover_offline_members()
+        
+        # Check for missed DM reminders while bot was offline
+        await self.recover_offline_dm_reminders()
+        
+        # Update bot status and start heartbeat
+        if self.db_pool:
+            await self.save_bot_status()
+            if not hasattr(self, 'heartbeat_task_started'):
+                self.heartbeat_task.start()
+                self.heartbeat_task_started = True
 
     def is_weekend_time(self, dt=None):
         """Check if the given datetime (or now) falls within weekend trading closure"""
@@ -1891,6 +2215,625 @@ async def database_status_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="giveaway", description="Create and manage giveaways")
+@app_commands.describe(
+    action="Giveaway action: message, role, duration, winners, choose_winners, end, or list",
+    custom_message="Custom giveaway message explaining what it's for, requirements, etc.",
+    required_role="Role required to enter the giveaway",
+    weeks="Number of weeks for giveaway duration",
+    days="Number of days for giveaway duration", 
+    hours="Number of hours for giveaway duration",
+    minutes="Number of minutes for giveaway duration",
+    winner_count="Number of winners to select",
+    chosen_winner="User to guarantee as winner (for choose_winners action)",
+    giveaway_id="ID of existing giveaway to modify (use 'list' action to see active giveaways)"
+)
+async def giveaway_command(interaction: discord.Interaction,
+                          action: str,
+                          custom_message: str = None,
+                          required_role: discord.Role = None,
+                          weeks: int = 0,
+                          days: int = 0,
+                          hours: int = 0,
+                          minutes: int = 0,
+                          winner_count: int = 1,
+                          chosen_winner: discord.Member = None,
+                          giveaway_id: str = None):
+    """Comprehensive giveaway system with role requirements and custom settings"""
+    
+    # Check admin permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "❌ You need administrator permissions to use this command.",
+            ephemeral=True
+        )
+        return
+    
+    try:
+        if action.lower() == "message":
+            if not custom_message:
+                await interaction.response.send_message(
+                    "❌ You must provide a custom message when using the message action.",
+                    ephemeral=True
+                )
+                return
+            
+            # Store the message for the current giveaway being created
+            if not hasattr(bot, '_temp_giveaway'):
+                bot._temp_giveaway = {}
+            bot._temp_giveaway['message'] = custom_message
+            
+            await interaction.response.send_message(
+                f"✅ **Giveaway message set!**\n\n📝 **Preview:**\n{custom_message}\n\n" +
+                "Next, use `/giveaway role` to set the required role.",
+                ephemeral=True
+            )
+        
+        elif action.lower() == "role":
+            if not required_role:
+                await interaction.response.send_message(
+                    "❌ You must specify a role when using the role action.",
+                    ephemeral=True
+                )
+                return
+            
+            if not hasattr(bot, '_temp_giveaway'):
+                bot._temp_giveaway = {}
+            bot._temp_giveaway['role'] = required_role
+            
+            await interaction.response.send_message(
+                f"✅ **Required role set to:** {required_role.mention}\n\n" +
+                "Next, use `/giveaway duration` to set how long the giveaway runs.",
+                ephemeral=True
+            )
+        
+        elif action.lower() == "duration":
+            total_minutes = (weeks * 7 * 24 * 60) + (days * 24 * 60) + (hours * 60) + minutes
+            
+            if total_minutes <= 0:
+                await interaction.response.send_message(
+                    "❌ Duration must be greater than 0. Please specify weeks, days, hours, and/or minutes.",
+                    ephemeral=True
+                )
+                return
+            
+            if not hasattr(bot, '_temp_giveaway'):
+                bot._temp_giveaway = {}
+            
+            bot._temp_giveaway['duration'] = {
+                'weeks': weeks,
+                'days': days,
+                'hours': hours,
+                'minutes': minutes,
+                'total_minutes': total_minutes
+            }
+            
+            # Create human readable duration
+            duration_parts = []
+            if weeks > 0:
+                duration_parts.append(f"{weeks} week{'s' if weeks != 1 else ''}")
+            if days > 0:
+                duration_parts.append(f"{days} day{'s' if days != 1 else ''}")
+            if hours > 0:
+                duration_parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+            if minutes > 0:
+                duration_parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+            
+            duration_text = ", ".join(duration_parts)
+            
+            await interaction.response.send_message(
+                f"✅ **Giveaway duration set to:** {duration_text}\n\n" +
+                "Next, use `/giveaway winners` to set how many winners there will be.",
+                ephemeral=True
+            )
+        
+        elif action.lower() == "winners":
+            if winner_count < 1:
+                await interaction.response.send_message(
+                    "❌ Number of winners must be at least 1.",
+                    ephemeral=True
+                )
+                return
+            
+            if not hasattr(bot, '_temp_giveaway'):
+                bot._temp_giveaway = {}
+            bot._temp_giveaway['winners'] = winner_count
+            
+            # Check if we have all required settings to create the giveaway
+            temp = getattr(bot, '_temp_giveaway', {})
+            missing = []
+            if 'message' not in temp:
+                missing.append("message")
+            if 'role' not in temp:
+                missing.append("role")  
+            if 'duration' not in temp:
+                missing.append("duration")
+            
+            if missing:
+                await interaction.response.send_message(
+                    f"✅ **Number of winners set to:** {winner_count}\n\n" +
+                    f"❌ **Still missing:** {', '.join(missing)}\n" +
+                    "Please set these before the giveaway can be created.",
+                    ephemeral=True
+                )
+            else:
+                # All settings complete - create the giveaway!
+                await interaction.response.defer()
+                await create_giveaway(interaction, temp)
+        
+        elif action.lower() == "list":
+            # Show all active giveaways
+            if not ACTIVE_GIVEAWAYS:
+                await interaction.response.send_message(
+                    "📭 **No active giveaways found.**\n\nCreate a new giveaway using `/giveaway message` to get started!",
+                    ephemeral=True
+                )
+                return
+            
+            embed = discord.Embed(
+                title="🎯 **Active Giveaways**",
+                description="Here are all currently running giveaways:",
+                color=discord.Color.blue()
+            )
+            
+            for gid, data in ACTIVE_GIVEAWAYS.items():
+                # Get the channel and role info
+                channel = bot.get_channel(data['channel_id'])
+                channel_name = channel.name if channel else "Unknown Channel"
+                
+                guild = interaction.guild if interaction.guild else bot.get_guild(data.get('guild_id', 0))
+                role = guild.get_role(data['required_role_id']) if guild else None
+                role_name = role.name if role else "Unknown Role"
+                
+                # Calculate time remaining
+                end_time = data['end_time']
+                if isinstance(end_time, str):
+                    try:
+                        from datetime import datetime
+                        end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                    except:
+                        end_time = datetime.now(AMSTERDAM_TZ)
+                
+                time_left = end_time - datetime.now(AMSTERDAM_TZ)
+                if time_left.total_seconds() > 0:
+                    hours, remainder = divmod(int(time_left.total_seconds()), 3600)
+                    minutes = remainder // 60
+                    time_str = f"{hours}h {minutes}m remaining"
+                else:
+                    time_str = "⚠️ Expired (ending soon)"
+                
+                # Show guaranteed winners count
+                guaranteed_count = len(data.get('chosen_winners', []))
+                
+                embed.add_field(
+                    name=f"🎉 `{gid}`",
+                    value=f"**Channel:** #{channel_name}\n" +
+                          f"**Required Role:** {role_name}\n" +
+                          f"**Winners:** {data['winner_count']} total\n" +
+                          f"**Guaranteed:** {guaranteed_count}\n" +
+                          f"**Time Left:** {time_str}",
+                    inline=True
+                )
+            
+            embed.set_footer(text="Use the giveaway ID with /giveaway choose_winners or /giveaway end")
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        elif action.lower() == "choose_winners":
+            if not chosen_winner:
+                await interaction.response.send_message(
+                    "❌ You must specify a user when using the choose_winners action.",
+                    ephemeral=True
+                )
+                return
+            
+            # If no giveaway_id provided, show the list of active giveaways
+            if not giveaway_id:
+                if not ACTIVE_GIVEAWAYS:
+                    await interaction.response.send_message(
+                        "❌ No active giveaways found. Create a giveaway first!",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Create a list of active giveaways to choose from
+                giveaway_list = []
+                for gid, data in ACTIVE_GIVEAWAYS.items():
+                    channel = bot.get_channel(data['channel_id'])
+                    channel_name = channel.name if channel else "Unknown"
+                    guaranteed_count = len(data.get('chosen_winners', []))
+                    giveaway_list.append(f"• `{gid}` - #{channel_name} ({guaranteed_count}/{data['winner_count']} guaranteed)")
+                
+                await interaction.response.send_message(
+                    f"❌ **Please specify which giveaway to add {chosen_winner.display_name} to:**\n\n" +
+                    f"**Active Giveaways:**\n" + "\n".join(giveaway_list) + "\n\n" +
+                    f"**Usage:** `/giveaway choose_winners giveaway_id:{giveaway_list[0].split('`')[1]} chosen_winner:{chosen_winner.display_name}`\n" +
+                    f"Or use `/giveaway list` to see full details of all active giveaways.",
+                    ephemeral=True
+                )
+                return
+            
+            if giveaway_id not in ACTIVE_GIVEAWAYS:
+                await interaction.response.send_message(
+                    f"❌ Invalid giveaway ID `{giveaway_id}`. Use `/giveaway list` to see active giveaways.",
+                    ephemeral=True
+                )
+                return
+            
+            giveaway_data = ACTIVE_GIVEAWAYS[giveaway_id]
+            
+            if 'chosen_winners' not in giveaway_data:
+                giveaway_data['chosen_winners'] = []
+            
+            if chosen_winner.id in giveaway_data['chosen_winners']:
+                await interaction.response.send_message(
+                    f"❌ {chosen_winner.display_name} is already chosen as a guaranteed winner for `{giveaway_id}`.",
+                    ephemeral=True
+                )
+                return
+            
+            # Check if we're exceeding the winner limit
+            if len(giveaway_data['chosen_winners']) >= giveaway_data['winner_count']:
+                await interaction.response.send_message(
+                    f"❌ Cannot add more guaranteed winners. Giveaway `{giveaway_id}` already has {len(giveaway_data['chosen_winners'])} guaranteed winners out of {giveaway_data['winner_count']} total winners.",
+                    ephemeral=True
+                )
+                return
+            
+            giveaway_data['chosen_winners'].append(chosen_winner.id)
+            
+            await interaction.response.send_message(
+                f"✅ **{chosen_winner.display_name} is now guaranteed to win** giveaway `{giveaway_id}`!\n" +
+                f"**Guaranteed winners:** {len(giveaway_data['chosen_winners'])}/{giveaway_data['winner_count']}\n" +
+                f"**Remaining random slots:** {giveaway_data['winner_count'] - len(giveaway_data['chosen_winners'])}",
+                ephemeral=True
+            )
+        
+        elif action.lower() == "end":
+            # If no giveaway_id provided, show the list of active giveaways
+            if not giveaway_id:
+                if not ACTIVE_GIVEAWAYS:
+                    await interaction.response.send_message(
+                        "❌ No active giveaways found to end.",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Create a list of active giveaways to choose from
+                giveaway_list = []
+                for gid, data in ACTIVE_GIVEAWAYS.items():
+                    channel = bot.get_channel(data['channel_id'])
+                    channel_name = channel.name if channel else "Unknown"
+                    guaranteed_count = len(data.get('chosen_winners', []))
+                    giveaway_list.append(f"• `{gid}` - #{channel_name} ({guaranteed_count}/{data['winner_count']} guaranteed)")
+                
+                await interaction.response.send_message(
+                    f"❌ **Please specify which giveaway to end:**\n\n" +
+                    f"**Active Giveaways:**\n" + "\n".join(giveaway_list) + "\n\n" +
+                    f"**Usage:** `/giveaway end giveaway_id:{giveaway_list[0].split('`')[1]}`\n" +
+                    f"Or use `/giveaway list` to see full details of all active giveaways.",
+                    ephemeral=True
+                )
+                return
+            
+            if giveaway_id not in ACTIVE_GIVEAWAYS:
+                await interaction.response.send_message(
+                    f"❌ Invalid giveaway ID `{giveaway_id}`. Use `/giveaway list` to see active giveaways.",
+                    ephemeral=True
+                )
+                return
+            
+            await interaction.response.defer()
+            await end_giveaway(giveaway_id, interaction)
+        
+        else:
+            await interaction.response.send_message(
+                "❌ Invalid action. Use: message, role, duration, winners, choose_winners, end, or list",
+                ephemeral=True
+            )
+    
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Error with giveaway command: {str(e)}",
+            ephemeral=True
+        )
+
+
+async def create_giveaway(interaction, settings):
+    """Create and post the actual giveaway"""
+    try:
+        # Generate unique giveaway ID
+        giveaway_id = f"giveaway_{int(datetime.now().timestamp())}"
+        
+        # Calculate end time
+        end_time = datetime.now(AMSTERDAM_TZ) + timedelta(minutes=settings['duration']['total_minutes'])
+        
+        # Create duration text
+        duration = settings['duration']
+        duration_parts = []
+        if duration['weeks'] > 0:
+            duration_parts.append(f"{duration['weeks']} week{'s' if duration['weeks'] != 1 else ''}")
+        if duration['days'] > 0:
+            duration_parts.append(f"{duration['days']} day{'s' if duration['days'] != 1 else ''}")
+        if duration['hours'] > 0:
+            duration_parts.append(f"{duration['hours']} hour{'s' if duration['hours'] != 1 else ''}")
+        if duration['minutes'] > 0:
+            duration_parts.append(f"{duration['minutes']} minute{'s' if duration['minutes'] != 1 else ''}")
+        
+        duration_text = ", ".join(duration_parts)
+        
+        # Create the giveaway embed
+        embed = discord.Embed(
+            title="🎉 **GIVEAWAY** 🎉",
+            description=settings['message'],
+            color=discord.Color.gold(),
+            timestamp=end_time
+        )
+        
+        embed.add_field(
+            name="⏰ Duration",
+            value=duration_text,
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🏆 Winners",
+            value=f"{settings['winners']} winner{'s' if settings['winners'] != 1 else ''}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎯 Giveaway ID",
+            value=f"`{giveaway_id}`",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎪 How to Enter",
+            value="React with 🎉 to this message to enter!",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📋 Requirements",
+            value=f"**The required rank to enter this giveaway is: {settings['role'].mention}**",
+            inline=False
+        )
+        
+        embed.set_footer(text="Ends at")
+        
+        # Get the giveaway channel
+        giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
+        if not giveaway_channel:
+            await interaction.followup.send(
+                f"❌ Could not find giveaway channel with ID {GIVEAWAY_CHANNEL_ID}",
+                ephemeral=True
+            )
+            return
+        
+        # Create the message content with @everyone at the bottom
+        message_content = "@everyone"
+        
+        # Send the giveaway message
+        message = await giveaway_channel.send(content=message_content, embed=embed)
+        await message.add_reaction("🎉")
+        
+        # Store giveaway data
+        ACTIVE_GIVEAWAYS[giveaway_id] = {
+            'message_id': message.id,
+            'channel_id': GIVEAWAY_CHANNEL_ID,
+            'creator_id': interaction.user.id,
+            'required_role_id': settings['role'].id,
+            'winner_count': settings['winners'],
+            'end_time': end_time,
+            'participants': [],
+            'chosen_winners': [],
+            'settings': settings
+        }
+        
+        # Clear temp settings
+        if hasattr(bot, '_temp_giveaway'):
+            delattr(bot, '_temp_giveaway')
+        
+        # Schedule the giveaway to end
+        asyncio.create_task(schedule_giveaway_end(giveaway_id))
+        
+        await interaction.followup.send(
+            f"✅ **Giveaway created successfully!**\n" +
+            f"🎯 **Giveaway ID:** `{giveaway_id}`\n" +
+            f"📍 **Posted in:** {giveaway_channel.mention}\n" +
+            f"⏰ **Ends:** <t:{int(end_time.timestamp())}:R>",
+            ephemeral=True
+        )
+        
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Error creating giveaway: {str(e)}",
+            ephemeral=True
+        )
+
+
+async def schedule_giveaway_end(giveaway_id):
+    """Schedule a giveaway to end automatically"""
+    try:
+        giveaway_data = ACTIVE_GIVEAWAYS.get(giveaway_id)
+        if not giveaway_data:
+            return
+        
+        end_time = giveaway_data['end_time']
+        now = datetime.now(AMSTERDAM_TZ)
+        
+        # Calculate sleep time
+        sleep_seconds = (end_time - now).total_seconds()
+        
+        if sleep_seconds > 0:
+            await asyncio.sleep(sleep_seconds)
+            
+        # End the giveaway if it's still active
+        if giveaway_id in ACTIVE_GIVEAWAYS:
+            await end_giveaway(giveaway_id)
+            
+    except Exception as e:
+        print(f"Error scheduling giveaway end: {e}")
+
+
+async def end_giveaway(giveaway_id, interaction=None):
+    """End a giveaway and select winners"""
+    try:
+        if giveaway_id not in ACTIVE_GIVEAWAYS:
+            if interaction:
+                await interaction.followup.send("❌ Giveaway not found.", ephemeral=True)
+            return
+        
+        giveaway_data = ACTIVE_GIVEAWAYS[giveaway_id]
+        
+        # Get the message
+        channel = bot.get_channel(giveaway_data['channel_id'])
+        if not channel:
+            if interaction:
+                await interaction.followup.send("❌ Could not find giveaway channel.", ephemeral=True)
+            return
+        
+        try:
+            message = await channel.fetch_message(giveaway_data['message_id'])
+        except discord.NotFound:
+            if interaction:
+                await interaction.followup.send("❌ Giveaway message not found.", ephemeral=True)
+            return
+        
+        # Get all participants who reacted with 🎉
+        valid_participants = []
+        required_role = channel.guild.get_role(giveaway_data['required_role_id'])
+        
+        for reaction in message.reactions:
+            if str(reaction.emoji) == "🎉":
+                async for user in reaction.users():
+                    if user.bot:
+                        continue
+                    
+                    member = channel.guild.get_member(user.id)
+                    if member and required_role and required_role in member.roles:
+                        valid_participants.append(member)
+        
+        # Remove duplicates
+        valid_participants = list(set(valid_participants))
+        
+        # Get chosen winners and random winners
+        chosen_winners = giveaway_data.get('chosen_winners', [])
+        winner_count = giveaway_data['winner_count']
+        
+        final_winners = []
+        
+        # Add guaranteed winners first
+        for winner_id in chosen_winners:
+            winner = channel.guild.get_member(winner_id)
+            if winner and winner in valid_participants:
+                final_winners.append(winner)
+                valid_participants.remove(winner)  # Remove from random pool
+        
+        # Fill remaining winner slots with random selection
+        remaining_slots = winner_count - len(final_winners)
+        if remaining_slots > 0 and valid_participants:
+            import random
+            additional_winners = random.sample(
+                valid_participants, 
+                min(remaining_slots, len(valid_participants))
+            )
+            final_winners.extend(additional_winners)
+        
+        # Create winner announcement
+        embed = discord.Embed(
+            title="🎉 **GIVEAWAY ENDED** 🎉",
+            color=discord.Color.green(),
+            timestamp=datetime.now(AMSTERDAM_TZ)
+        )
+        
+        if final_winners:
+            winner_mentions = [winner.mention for winner in final_winners]
+            embed.add_field(
+                name="🏆 Winners",
+                value="\n".join(winner_mentions),
+                inline=False
+            )
+            
+            embed.add_field(
+                name="📊 Stats",
+                value=f"Total Participants: {len(valid_participants) + len(final_winners)}\nWinners Selected: {len(final_winners)}",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="😔 No Winners",
+                value="No valid participants found or no one had the required role.",
+                inline=False
+            )
+        
+        embed.add_field(
+            name="🎯 Giveaway ID",
+            value=f"`{giveaway_id}`",
+            inline=True
+        )
+        
+        embed.set_footer(text="Ended at")
+        
+        # Send winner announcement
+        await channel.send(embed=embed)
+        
+        # Remove from active giveaways
+        del ACTIVE_GIVEAWAYS[giveaway_id]
+        
+        if interaction:
+            await interaction.followup.send(
+                f"✅ Giveaway `{giveaway_id}` ended successfully!\n" +
+                f"🏆 Winners: {len(final_winners)}"
+            )
+        
+    except Exception as e:
+        print(f"Error ending giveaway: {e}")
+        if interaction:
+            await interaction.followup.send(f"❌ Error ending giveaway: {str(e)}", ephemeral=True)
+
+
+# Add the giveaway reaction handler
+@bot.event
+async def on_reaction_add(reaction, user):
+    """Handle giveaway entry via reactions"""
+    if user.bot:
+        return
+    
+    # Check if this is a giveaway reaction
+    if str(reaction.emoji) != "🎉":
+        return
+    
+    # Find if this message is a giveaway
+    giveaway_id = None
+    for gid, data in ACTIVE_GIVEAWAYS.items():
+        if data['message_id'] == reaction.message.id:
+            giveaway_id = gid
+            break
+    
+    if not giveaway_id:
+        return
+    
+    giveaway_data = ACTIVE_GIVEAWAYS[giveaway_id]
+    
+    # Check if user has required role
+    required_role = reaction.message.guild.get_role(giveaway_data['required_role_id'])
+    member = reaction.message.guild.get_member(user.id)
+    
+    if not member or not required_role or required_role not in member.roles:
+        # Remove their reaction and send DM
+        try:
+            await reaction.remove(user)
+            await user.send(
+                "**Unfortunately, your current activity level is not high enough to enter this giveaway. " +
+                "You can level up by participating in conversations in any of our text channels.**"
+            )
+        except (discord.Forbidden, discord.NotFound):
+            pass  # Can't DM user or remove reaction
+        return
+
+
 @bot.tree.command(name="stats", description="Send trading statistics summary")
 @app_commands.describe(
     date_range="Date range for the statistics",
@@ -2008,7 +2951,8 @@ async def stats_command(interaction: discord.Interaction,
 # Web server for health checks
 async def web_server():
     """Simple web server for health checks and keeping the service alive"""
-
+    runner = None
+    
     async def health_check(request):
         bot_status = "Connected" if bot.is_ready() else "Connecting"
         guild_count = len(bot.guilds) if bot.is_ready() else 0
@@ -2039,7 +2983,8 @@ async def web_server():
             "database_status": database_status,
             "database_details": database_details,
             "uptime": str(datetime.now()),
-            "version": "2.0"
+            "version": "2.1",
+            "last_heartbeat": str(bot.last_heartbeat) if hasattr(bot, 'last_heartbeat') and bot.last_heartbeat else "N/A"
         }
 
         return web.json_response(response_data, status=200)
@@ -2060,23 +3005,32 @@ async def web_server():
         print("✅ Web server started successfully on port 5000")
         print("Health check available at: http://0.0.0.0:5000/health")
 
-        # Keep the server running
-        while True:
-            await asyncio.sleep(3600)  # Sleep for 1 hour, then continue
+        try:
+            # Keep the server running
+            while True:
+                await asyncio.sleep(3600)  # Sleep for 1 hour, then continue
+        except asyncio.CancelledError:
+            print("Web server shutting down...")
+        finally:
+            # Cleanup web server properly
+            await runner.cleanup()
+            print("✅ Web server cleaned up properly")
 
     except Exception as e:
         print(f"❌ Failed to start web server: {e}")
+        if runner:
+            await runner.cleanup()
         raise
 
 
 async def main():
     """Main async function to run both web server and Discord bot concurrently"""
     # Check if Discord token is available
-    if not DISCORD_TOKEN:
+    if not DISCORD_TOKEN or len(DISCORD_TOKEN) < 50:
         print("Error: DISCORD_TOKEN not found in environment variables")
-        print(
-            "Please set DISCORD_TOKEN_PART1 and DISCORD_TOKEN_PART2 environment variables"
-        )
+        print(f"Token parts found: PART1={bool(DISCORD_TOKEN_PART1)}, PART2={bool(DISCORD_TOKEN_PART2)}")
+        print(f"Assembled token length: {len(DISCORD_TOKEN) if DISCORD_TOKEN else 0}")
+        print("Please set DISCORD_TOKEN_PART1 and DISCORD_TOKEN_PART2 environment variables")
         return
 
     print(f"Bot token length: {len(DISCORD_TOKEN)} characters")
