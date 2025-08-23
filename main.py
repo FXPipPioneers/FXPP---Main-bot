@@ -351,7 +351,7 @@ class TradingBot(commands.Bot):
                     # Send missed 3-day DM
                     if not dm_data["dm_3_sent"] and current_time >= dm_3_time:
                         try:
-                            dm_message = "👋 **Hey there!** We noticed your 24-hour premium access to our signals has expired. We'd love to have you back! Consider upgrading to our **@Gold Pioneer** membership for unlimited access to our premium signals and exclusive trading insights. 💎"
+                            dm_message = "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_3_sent"] = True
                             recovered_dms += 1
@@ -362,7 +362,7 @@ class TradingBot(commands.Bot):
                     # Send missed 7-day DM
                     if not dm_data["dm_7_sent"] and current_time >= dm_7_time:
                         try:
-                            dm_message = "📈 **A week has passed!** We hope you're still enjoying our free signals in the main channel. Ready to take your trading to the next level? **@Gold Pioneer** members get access to our most profitable setups with detailed analysis. Join the winning team! 🏆"
+                            dm_message = "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers  have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 24 hours, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_7_sent"] = True
                             recovered_dms += 1
@@ -373,7 +373,7 @@ class TradingBot(commands.Bot):
                     # Send missed 14-day DM
                     if not dm_data["dm_14_sent"] and current_time >= dm_14_time:
                         try:
-                            dm_message = "🎯 **Two weeks of free signals!** We hope you've seen the quality of our trading calls. This is your final invitation to join **@Gold Pioneer** and unlock our premium strategy breakdowns, market analysis, and exclusive high-probability setups. Don't miss out on maximizing your trading potential! 💰"
+                            dm_message = "Hey! It's been two weeks since your access to Premium Signals ended. We hope you've stayed active. \n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. in <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **officially invite you back into Premium Signals** and help you start compounding results again.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_14_sent"] = True
                             recovered_dms += 1
@@ -2359,201 +2359,234 @@ async def database_status_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
-# Giveaway command group
-giveaway_group = app_commands.Group(name="giveaway", description="Create and manage giveaways")
-
-@giveaway_group.command(name="create", description="Create a new giveaway")
+# Unified Giveaway Command
+@bot.tree.command(name="giveaway", description="Complete giveaway management - create, list, choose winners, and end")
 @app_commands.describe(
-    message="Custom giveaway message explaining what it's for",
-    required_role="Role required to enter the giveaway",
-    winners="Number of winners to select",
-    weeks="Number of weeks for giveaway duration",
-    days="Number of days for giveaway duration", 
-    hours="Number of hours for giveaway duration",
-    minutes="Number of minutes for giveaway duration"
+    action="What do you want to do with giveaways?",
+    message="[CREATE] Custom giveaway message explaining what it's for",
+    required_role="[CREATE] Role required to enter the giveaway", 
+    winners="[CREATE] Number of winners to select",
+    weeks="[CREATE] Number of weeks for giveaway duration",
+    days="[CREATE] Number of days for giveaway duration",
+    hours="[CREATE] Number of hours for giveaway duration", 
+    minutes="[CREATE] Number of minutes for giveaway duration",
+    giveaway_id="[CHOOSE_WINNER/END] ID of the giveaway (use action=list to see active ones)",
+    user="[CHOOSE_WINNER] User to guarantee as a winner"
 )
-async def giveaway_create(interaction: discord.Interaction,
-                         message: str,
-                         required_role: discord.Role,
-                         winners: int = 1,
-                         weeks: int = 0,
-                         days: int = 0,
-                         hours: int = 0,
-                         minutes: int = 0):
-    """Create a new giveaway with all settings at once"""
+async def giveaway_command(interaction: discord.Interaction,
+                          action: str,
+                          message: str = None,
+                          required_role: discord.Role = None,
+                          winners: int = 1,
+                          weeks: int = 0,
+                          days: int = 0, 
+                          hours: int = 0,
+                          minutes: int = 0,
+                          giveaway_id: str = None,
+                          user: discord.Member = None):
+    """Unified giveaway management command"""
     
-    # Check admin permissions
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "❌ You need administrator permissions to use this command.",
-            ephemeral=True
-        )
+    # Owner check for security
+    if not await owner_check(interaction):
         return
     
     try:
-        # Validate inputs
-        if winners <= 0:
-            await interaction.response.send_message(
-                "❌ Winner count must be greater than 0.",
-                ephemeral=True
-            )
-            return
-        
-        total_minutes = weeks * 7 * 24 * 60 + days * 24 * 60 + hours * 60 + minutes
-        if total_minutes <= 0:
-            await interaction.response.send_message(
-                "❌ You must set a duration greater than 0. Use weeks, days, hours, and/or minutes.",
-                ephemeral=True
-            )
-            return
-        
-        # Create giveaway settings
-        settings = {
-            'message': message,
-            'role': required_role,
-            'winners': winners,
-            'duration': {
-                'weeks': weeks,
-                'days': days,
-                'hours': hours,
-                'minutes': minutes,
-                'total_minutes': total_minutes
+        if action == "create":
+            # Validate required parameters for create
+            if not message:
+                await interaction.response.send_message(
+                    "❌ **Message is required** for creating giveaways.\n" +
+                    "Example: `message: Win a $100 Amazon gift card!`",
+                    ephemeral=True
+                )
+                return
+                
+            if not required_role:
+                await interaction.response.send_message(
+                    "❌ **Required role is required** for creating giveaways.\n" +
+                    "Example: `required_role: @Active Members`",
+                    ephemeral=True
+                )
+                return
+            
+            if winners <= 0:
+                await interaction.response.send_message(
+                    "❌ Winner count must be greater than 0.",
+                    ephemeral=True
+                )
+                return
+            
+            total_minutes = weeks * 7 * 24 * 60 + days * 24 * 60 + hours * 60 + minutes
+            if total_minutes <= 0:
+                await interaction.response.send_message(
+                    "❌ You must set a duration greater than 0.\n" +
+                    "Use `weeks`, `days`, `hours`, and/or `minutes` parameters.",
+                    ephemeral=True
+                )
+                return
+            
+            # Create giveaway settings
+            settings = {
+                'message': message,
+                'role': required_role,
+                'winners': winners,
+                'duration': {
+                    'weeks': weeks,
+                    'days': days,
+                    'hours': hours,
+                    'minutes': minutes,
+                    'total_minutes': total_minutes
+                }
             }
-        }
-        
-        await interaction.response.send_message("🎉 Creating your giveaway...", ephemeral=True)
-        await create_giveaway(interaction, settings)
-        
+            
+            await interaction.response.send_message("🎉 Creating your giveaway...", ephemeral=True)
+            await create_giveaway(interaction, settings)
+            
+        elif action == "list":
+            # List all active giveaways
+            if not ACTIVE_GIVEAWAYS:
+                await interaction.response.send_message(
+                    "📋 **No active giveaways found.**",
+                    ephemeral=True
+                )
+                return
+            
+            giveaway_list = []
+            for gid, data in ACTIVE_GIVEAWAYS.items():
+                end_time = data['end_time']
+                if isinstance(end_time, str):
+                    end_time = datetime.fromisoformat(end_time)
+                if end_time.tzinfo is None:
+                    end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
+                
+                time_left = end_time - datetime.now(AMSTERDAM_TZ)
+                if time_left.total_seconds() > 0:
+                    hours_left = int(time_left.total_seconds() // 3600)
+                    minutes_left = int((time_left.total_seconds() % 3600) // 60)
+                    chosen_count = len(data.get('chosen_winners', []))
+                    
+                    giveaway_list.append(
+                        f"**{gid}**\n" +
+                        f"  ⏰ Time left: {hours_left}h {minutes_left}m\n" +
+                        f"  🏆 Winners: {data['winner_count']}\n" +
+                        f"  🎯 Guaranteed: {chosen_count}/{data['winner_count']}\n"
+                    )
+            
+            if not giveaway_list:
+                await interaction.response.send_message(
+                    "📋 **No active giveaways found.**",
+                    ephemeral=True
+                )
+                return
+            
+            await interaction.response.send_message(
+                "📋 **Active Giveaways:**\n\n" + "\n".join(giveaway_list),
+                ephemeral=True
+            )
+            
+        elif action == "choose_winner":
+            # Guarantee a specific user as winner
+            if not giveaway_id:
+                await interaction.response.send_message(
+                    "❌ **Giveaway ID is required** for choosing winners.\n" +
+                    "Use `action: list` first to see active giveaway IDs.",
+                    ephemeral=True
+                )
+                return
+                
+            if not user:
+                await interaction.response.send_message(
+                    "❌ **User is required** for choosing winners.\n" +
+                    "Example: `user: @JohnDoe`",
+                    ephemeral=True
+                )
+                return
+            
+            if giveaway_id not in ACTIVE_GIVEAWAYS:
+                await interaction.response.send_message(
+                    f"❌ Giveaway `{giveaway_id}` not found.\n" +
+                    f"Use `action: list` to see active giveaways.",
+                    ephemeral=True
+                )
+                return
+            
+            # Add chosen winner
+            if 'chosen_winners' not in ACTIVE_GIVEAWAYS[giveaway_id]:
+                ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'] = []
+            
+            if user.id not in ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners']:
+                # Check if we're not exceeding winner limit
+                current_chosen = len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])
+                max_winners = ACTIVE_GIVEAWAYS[giveaway_id]['winner_count']
+                
+                if current_chosen >= max_winners:
+                    await interaction.response.send_message(
+                        f"❌ Cannot add more guaranteed winners.\n" +
+                        f"This giveaway already has {current_chosen} guaranteed winner(s) and the max is {max_winners}.",
+                        ephemeral=True
+                    )
+                    return
+                
+                ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user.id)
+                await interaction.response.send_message(
+                    f"✅ **{user.mention} has been guaranteed as a winner** for giveaway `{giveaway_id}`!\n" +
+                    f"Guaranteed winners: {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    f"❌ {user.mention} is already guaranteed as a winner for this giveaway.",
+                    ephemeral=True
+                )
+                
+        elif action == "end":
+            # End a giveaway early
+            if not giveaway_id:
+                await interaction.response.send_message(
+                    "❌ **Giveaway ID is required** for ending giveaways.\n" +
+                    "Use `action: list` first to see active giveaway IDs.",
+                    ephemeral=True
+                )
+                return
+            
+            if giveaway_id not in ACTIVE_GIVEAWAYS:
+                await interaction.response.send_message(
+                    f"❌ Giveaway `{giveaway_id}` not found.\n" +
+                    f"Use `action: list` to see active giveaways.",
+                    ephemeral=True
+                )
+                return
+            
+            await interaction.response.send_message(f"🏁 Ending giveaway `{giveaway_id}`...", ephemeral=True)
+            await end_giveaway(giveaway_id, interaction)
+            
+        else:
+            await interaction.response.send_message(
+                "❌ **Invalid action!**\n\n" +
+                "**Available actions:**\n" +
+                "• `create` - Create a new giveaway\n" +
+                "• `list` - List all active giveaways\n" +
+                "• `choose_winner` - Guarantee a specific user as winner\n" +
+                "• `end` - End a giveaway early and select winners",
+                ephemeral=True
+            )
+            
     except Exception as e:
         await interaction.response.send_message(
-            f"❌ Error creating giveaway: {str(e)}",
+            f"❌ Error in giveaway command: {str(e)}",
             ephemeral=True
         )
 
-@giveaway_group.command(name="list", description="List all active giveaways")
-async def giveaway_list(interaction: discord.Interaction):
-    """List all currently active giveaways"""
-    
-    # Check admin permissions
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "❌ You need administrator permissions to use this command.",
-            ephemeral=True
-        )
-        return
-    
-    if not ACTIVE_GIVEAWAYS:
-        await interaction.response.send_message(
-            "📋 **No active giveaways found.**",
-            ephemeral=True
-        )
-        return
-    
-    giveaway_list = []
-    for gid, data in ACTIVE_GIVEAWAYS.items():
-        end_time = data['end_time']
-        if isinstance(end_time, str):
-            end_time = datetime.fromisoformat(end_time)
-        if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
-        
-        time_left = end_time - datetime.now(AMSTERDAM_TZ)
-        if time_left.total_seconds() > 0:
-            hours_left = int(time_left.total_seconds() // 3600)
-            minutes_left = int((time_left.total_seconds() % 3600) // 60)
-            chosen_count = len(data.get('chosen_winners', []))
-            
-            giveaway_list.append(
-                f"**{gid}**\n" +
-                f"  ⏰ Time left: {hours_left}h {minutes_left}m\n" +
-                f"  🏆 Winners: {data['winner_count']}\n" +
-                f"  🎯 Guaranteed: {chosen_count}/{data['winner_count']}\n"
-            )
-    
-    if not giveaway_list:
-        await interaction.response.send_message(
-            "📋 **No active giveaways found.**",
-            ephemeral=True
-        )
-        return
-    
-    await interaction.response.send_message(
-        "📋 **Active Giveaways:**\n\n" + "\n".join(giveaway_list),
-        ephemeral=True
-    )
-
-@giveaway_group.command(name="choose_winner", description="Guarantee a specific user as winner")
-@app_commands.describe(
-    giveaway_id="ID of the giveaway (use /giveaway list to see active ones)",
-    user="User to guarantee as a winner"
-)
-async def giveaway_choose_winner(interaction: discord.Interaction,
-                                giveaway_id: str,
-                                user: discord.Member):
-    """Add a guaranteed winner to an existing giveaway"""
-    
-    # Check if user is bot owner
-    if not await owner_check(interaction):
-        return
-    
-    if giveaway_id not in ACTIVE_GIVEAWAYS:
-        await interaction.response.send_message(
-            f"❌ Giveaway `{giveaway_id}` not found. Use `/giveaway list` to see active giveaways.",
-            ephemeral=True
-        )
-        return
-    
-    # Add chosen winner
-    if 'chosen_winners' not in ACTIVE_GIVEAWAYS[giveaway_id]:
-        ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'] = []
-    
-    if user.id not in ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners']:
-        # Check if we're not exceeding winner limit
-        current_chosen = len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])
-        max_winners = ACTIVE_GIVEAWAYS[giveaway_id]['winner_count']
-        
-        if current_chosen >= max_winners:
-            await interaction.response.send_message(
-                f"❌ Cannot add more guaranteed winners. This giveaway already has {current_chosen} guaranteed winner(s) and the max is {max_winners}.",
-                ephemeral=True
-            )
-            return
-        
-        ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user.id)
-        await interaction.response.send_message(
-            f"✅ **{user.mention} has been guaranteed as a winner** for giveaway `{giveaway_id}`!\n" +
-            f"Guaranteed winners: {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
-            ephemeral=True
-        )
-    else:
-        await interaction.response.send_message(
-            f"❌ {user.mention} is already guaranteed as a winner for this giveaway.",
-            ephemeral=True
-        )
-
-@giveaway_group.command(name="end", description="End a giveaway early and select winners")
-@app_commands.describe(
-    giveaway_id="ID of the giveaway to end (use /giveaway list to see active ones)"
-)
-async def giveaway_end(interaction: discord.Interaction, giveaway_id: str):
-    """End a giveaway early and select winners"""
-    
-    # Check if user is bot owner
-    if not await owner_check(interaction):
-        return
-    
-    if giveaway_id not in ACTIVE_GIVEAWAYS:
-        await interaction.response.send_message(
-            f"❌ Giveaway `{giveaway_id}` not found. Use `/giveaway list` to see active giveaways.",
-            ephemeral=True
-        )
-        return
-    
-    await interaction.response.send_message(f"🏁 Ending giveaway `{giveaway_id}`...", ephemeral=True)
-    await end_giveaway(giveaway_id, interaction)
-
-# Add the group to the bot
-bot.tree.add_command(giveaway_group)
+# Autocomplete for giveaway actions
+@giveaway_command.autocomplete('action')
+async def giveaway_action_autocomplete(interaction: discord.Interaction, current: str):
+    actions = [
+        app_commands.Choice(name="📝 Create New Giveaway", value="create"),
+        app_commands.Choice(name="📋 List Active Giveaways", value="list"), 
+        app_commands.Choice(name="🎯 Choose Guaranteed Winner", value="choose_winner"),
+        app_commands.Choice(name="🏁 End Giveaway Early", value="end")
+    ]
+    return [choice for choice in actions if current.lower() in choice.name.lower()]
 
 
 async def create_giveaway(interaction, settings):
