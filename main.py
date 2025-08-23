@@ -1254,7 +1254,7 @@ class TradingBot(commands.Bot):
         if messages_to_send:
             await self.save_auto_role_config()
 
-    @tasks.loop(hours=1)  # Check every hour for follow-up DMs
+    @tasks.loop(minutes=1)  # Check every minute for real-time DM sending
     async def followup_dm_task(self):
         """Background task to send Monday activation DMs for weekend joiners"""
         if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG[
@@ -2123,6 +2123,9 @@ async def timing_autocomplete(interaction: discord.Interaction, current: str):
 async def entry_command(interaction: discord.Interaction, entry_type: str,
                         pair: str, price: float, channels: str):
     """Create and send a trading signal to specified channels"""
+    
+    if not await owner_check(interaction):
+        return
 
     try:
         # Calculate TP and SL levels
@@ -2252,6 +2255,9 @@ async def channels_autocomplete(interaction: discord.Interaction,
                   description="Check database connection and status")
 async def database_status_command(interaction: discord.Interaction):
     """Check database connection status and show database information"""
+    
+    if not await owner_check(interaction):
+        return
 
     await interaction.response.defer(ephemeral=True)
 
@@ -2889,6 +2895,9 @@ async def stats_command(interaction: discord.Interaction,
                         currently_open: str = "0",
                         total_closed: int = None):
     """Send formatted trading statistics to specified channels"""
+    
+    if not await owner_check(interaction):
+        return
 
     try:
         # Calculate total closed if not provided
