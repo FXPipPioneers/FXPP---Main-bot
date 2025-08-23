@@ -105,6 +105,32 @@ GIVEAWAY_CHANNEL_ID = 1405490561963786271
 # Global storage for active giveaways
 ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
 
+# Level system configuration
+LEVEL_SYSTEM = {
+    "enabled": True,
+    "user_data": {},  # user_id: {"message_count": int, "current_level": int, "guild_id": guild_id}
+    "level_requirements": {
+        1: 10,      # Level 1: 10 messages (very easy start)
+        2: 25,      # Level 2: 25 messages (easy)
+        3: 50,      # Level 3: 50 messages (moderate)
+        4: 100,     # Level 4: 100 messages (decent activity)
+        5: 200,     # Level 5: 200 messages (good activity)
+        6: 400,     # Level 6: 400 messages (high activity)
+        7: 700,     # Level 7: 700 messages (very high activity)  
+        8: 1200     # Level 8: 1200 messages (maximum activity)
+    },
+    "level_roles": {
+        1: 1407632176060698725,
+        2: 1407632223578095657,
+        3: 1407632987029508166,
+        4: 1407632891965608110,
+        5: 1407632408580198440,
+        6: 1407633424952332428,
+        7: 1407632350543872091,
+        8: 1407633380916465694
+    }
+}
+
 # Amsterdam timezone handling with fallback
 if PYTZ_AVAILABLE:
     AMSTERDAM_TZ = pytz.timezone(
@@ -500,6 +526,16 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # User levels table for level system
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_levels (
+                        user_id BIGINT PRIMARY KEY,
+                        message_count INTEGER DEFAULT 0,
+                        current_level INTEGER DEFAULT 0,
+                        guild_id BIGINT NOT NULL
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
@@ -507,6 +543,9 @@ class TradingBot(commands.Bot):
             
             # Load bot status for offline recovery
             await self.load_bot_status()
+            
+            # Load level system data
+            await self.load_level_system()
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -976,6 +1015,11 @@ class TradingBot(commands.Bot):
                 f"❌ Error assigning auto-role to {member.display_name}: {str(e)}"
             )
 
+    async def on_message(self, message):
+        """Handle messages for level system"""
+        # Process message for level system
+        await self.process_message_for_levels(message)
+
     async def save_auto_role_config(self):
         """Save auto-role configuration to database"""
         if not self.db_pool:
@@ -1071,6 +1115,128 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"❌ Error saving to database: {str(e)}")
+
+    # ===== LEVEL SYSTEM FUNCTIONS =====
+    
+    async def save_level_system(self):
+        """Save level system data to database"""
+        if not self.db_pool:
+            return  # No database available
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Save user level data using UPSERT
+                for user_id, data in LEVEL_SYSTEM["user_data"].items():
+                    await conn.execute('''
+                        INSERT INTO user_levels (user_id, message_count, current_level, guild_id)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (user_id) DO UPDATE SET
+                            message_count = $2,
+                            current_level = $3,
+                            guild_id = $4
+                    ''', int(user_id), data["message_count"], data["current_level"], data["guild_id"])
+                    
+        except Exception as e:
+            print(f"❌ Error saving level system to database: {str(e)}")
+
+    async def load_level_system(self):
+        """Load level system data from database"""
+        if not self.db_pool:
+            return  # No database available
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Load user level data
+                rows = await conn.fetch('SELECT user_id, message_count, current_level, guild_id FROM user_levels')
+                for row in rows:
+                    LEVEL_SYSTEM["user_data"][str(row['user_id'])] = {
+                        "message_count": row['message_count'],
+                        "current_level": row['current_level'],
+                        "guild_id": row['guild_id']
+                    }
+                
+            if LEVEL_SYSTEM["user_data"]:
+                print(f"✅ Loaded level data for {len(LEVEL_SYSTEM['user_data'])} users")
+            else:
+                print("📊 No existing level data found - starting fresh")
+                
+        except Exception as e:
+            print(f"❌ Error loading level system from database: {str(e)}")
+
+    def calculate_level(self, message_count):
+        """Calculate user level based on message count"""
+        for level in sorted(LEVEL_SYSTEM["level_requirements"].keys(), reverse=True):
+            if message_count >= LEVEL_SYSTEM["level_requirements"][level]:
+                return level
+        return 0  # No level achieved yet
+
+    async def handle_level_up(self, user, guild, old_level, new_level):
+        """Handle level up - assign roles and send DM"""
+        try:
+            # Assign new level role (don't remove old ones as requested)
+            new_role_id = LEVEL_SYSTEM["level_roles"][new_level]
+            new_role = guild.get_role(new_role_id)
+            
+            if new_role:
+                member = guild.get_member(user.id)
+                if member:
+                    try:
+                        await member.add_roles(new_role, reason=f"Level {new_level} achieved")
+                        await self.log_to_discord(f"🎉 {member.display_name} leveled up to Level {new_level}! Role '{new_role.name}' assigned.")
+                        
+                        # Send congratulations DM
+                        try:
+                            dm_message = f"Congratulations! You've leveled up to {new_level}."
+                            await user.send(dm_message)
+                            await self.log_to_discord(f"📬 Sent level-up DM to {member.display_name} for Level {new_level}")
+                        except discord.Forbidden:
+                            await self.log_to_discord(f"⚠️ Could not send level-up DM to {member.display_name} (DMs disabled)")
+                        
+                    except discord.Forbidden:
+                        await self.log_to_discord(f"❌ No permission to assign Level {new_level} role to {member.display_name}")
+                else:
+                    await self.log_to_discord(f"❌ Could not find member {user.display_name} in guild for level-up")
+            else:
+                await self.log_to_discord(f"❌ Could not find Level {new_level} role (ID: {new_role_id})")
+                
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error handling level up for {user.display_name}: {str(e)}")
+
+    async def process_message_for_levels(self, message):
+        """Process a message for level system"""
+        if not LEVEL_SYSTEM["enabled"]:
+            return
+            
+        # Skip bots and DMs
+        if message.author.bot or not message.guild:
+            return
+            
+        user_id = str(message.author.id)
+        guild_id = message.guild.id
+        
+        # Initialize user data if not exists
+        if user_id not in LEVEL_SYSTEM["user_data"]:
+            LEVEL_SYSTEM["user_data"][user_id] = {
+                "message_count": 0,
+                "current_level": 0,
+                "guild_id": guild_id
+            }
+        
+        # Increment message count
+        LEVEL_SYSTEM["user_data"][user_id]["message_count"] += 1
+        current_count = LEVEL_SYSTEM["user_data"][user_id]["message_count"]
+        old_level = LEVEL_SYSTEM["user_data"][user_id]["current_level"]
+        
+        # Calculate new level
+        new_level = self.calculate_level(current_count)
+        
+        # Check if leveled up
+        if new_level > old_level:
+            LEVEL_SYSTEM["user_data"][user_id]["current_level"] = new_level
+            await self.handle_level_up(message.author, message.guild, old_level, new_level)
+            
+            # Save to database
+            await self.save_level_system()
 
     @tasks.loop(seconds=30)  # Check every 30 seconds for instant role removal
     async def role_removal_task(self):
@@ -2357,6 +2523,106 @@ async def database_status_command(interaction: discord.Interaction):
             inline=False)
 
     await interaction.followup.send(embed=embed)
+
+
+# Level System Command
+@bot.tree.command(name="level", description="Check level information for yourself or another user")
+@app_commands.describe(
+    user="User to check level for (leave empty to check your own level)"
+)
+async def level_command(interaction: discord.Interaction, user: discord.Member = None):
+    """Check level information"""
+    
+    if not await owner_check(interaction):
+        return
+    
+    target_user = user or interaction.user
+    user_id = str(target_user.id)
+    
+    if user_id not in LEVEL_SYSTEM["user_data"]:
+        await interaction.response.send_message(
+            f"📊 **{target_user.display_name}** has not sent any messages yet.\n" +
+            "Start chatting to begin leveling up!",
+            ephemeral=True
+        )
+        return
+    
+    user_data = LEVEL_SYSTEM["user_data"][user_id]
+    current_level = user_data["current_level"]
+    message_count = user_data["message_count"]
+    
+    # Calculate progress to next level
+    next_level = current_level + 1
+    if next_level <= 8:  # Max level is 8
+        messages_needed = LEVEL_SYSTEM["level_requirements"][next_level]
+        progress = message_count
+        remaining = messages_needed - message_count
+        progress_percentage = (progress / messages_needed) * 100
+    else:
+        # Max level reached
+        messages_needed = None
+        remaining = 0
+        progress_percentage = 100
+    
+    # Create level embed
+    embed = discord.Embed(
+        title=f"📊 Level Information for {target_user.display_name}",
+        color=discord.Color.gold()
+    )
+    
+    if current_level > 0:
+        embed.add_field(
+            name="🏆 Current Level",
+            value=f"**Level {current_level}**",
+            inline=True
+        )
+    else:
+        embed.add_field(
+            name="🏆 Current Level", 
+            value="**Not yet achieved**",
+            inline=True
+        )
+    
+    embed.add_field(
+        name="💬 Total Messages",
+        value=f"**{message_count:,}**",
+        inline=True
+    )
+    
+    if next_level <= 8:
+        embed.add_field(
+            name="🎯 Next Level Progress",
+            value=f"**{progress}/{messages_needed}** messages\n" +
+                  f"**{remaining:,}** messages to Level {next_level}\n" +
+                  f"**{progress_percentage:.1f}%** complete",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="🎉 Achievement",
+            value="**MAX LEVEL REACHED!**\nCongratulations on reaching Level 8!",
+            inline=False
+        )
+    
+    # Add level requirements info
+    requirements_text = ""
+    for level, required in LEVEL_SYSTEM["level_requirements"].items():
+        if level <= current_level:
+            requirements_text += f"✅ Level {level}: {required:,} messages\n"
+        elif level == current_level + 1:
+            requirements_text += f"🎯 Level {level}: {required:,} messages\n"
+        else:
+            requirements_text += f"🔒 Level {level}: {required:,} messages\n"
+    
+    embed.add_field(
+        name="📋 Level Requirements",
+        value=requirements_text,
+        inline=False
+    )
+    
+    embed.set_footer(text="Keep chatting in any text channel to level up!")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # Unified Giveaway Command
