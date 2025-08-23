@@ -63,6 +63,13 @@ DISCORD_CLIENT_ID_PART1 = os.getenv("DISCORD_CLIENT_ID_PART1", "")
 DISCORD_CLIENT_ID_PART2 = os.getenv("DISCORD_CLIENT_ID_PART2", "")
 DISCORD_CLIENT_ID = DISCORD_CLIENT_ID_PART1 + DISCORD_CLIENT_ID_PART2
 
+# Bot owner user ID for command restrictions
+BOT_OWNER_USER_ID = os.getenv("BOT_OWNER_USER_ID", "")
+if BOT_OWNER_USER_ID:
+    print(f"✅ Bot owner ID loaded: {BOT_OWNER_USER_ID}")
+else:
+    print("⚠️ BOT_OWNER_USER_ID not set - all users can use commands")
+
 # Bot setup with intents
 intents = discord.Intents.default()
 intents.message_content = True
@@ -344,7 +351,7 @@ class TradingBot(commands.Bot):
                     # Send missed 3-day DM
                     if not dm_data["dm_3_sent"] and current_time >= dm_3_time:
                         try:
-                            dm_message = "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
+                            dm_message = "👋 **Hey there!** We noticed your 24-hour premium access to our signals has expired. We'd love to have you back! Consider upgrading to our **@Gold Pioneer** membership for unlimited access to our premium signals and exclusive trading insights. 💎"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_3_sent"] = True
                             recovered_dms += 1
@@ -355,7 +362,7 @@ class TradingBot(commands.Bot):
                     # Send missed 7-day DM
                     if not dm_data["dm_7_sent"] and current_time >= dm_7_time:
                         try:
-                            dm_message = "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 24 hours, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
+                            dm_message = "📈 **A week has passed!** We hope you're still enjoying our free signals in the main channel. Ready to take your trading to the next level? **@Gold Pioneer** members get access to our most profitable setups with detailed analysis. Join the winning team! 🏆"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_7_sent"] = True
                             recovered_dms += 1
@@ -366,7 +373,7 @@ class TradingBot(commands.Bot):
                     # Send missed 14-day DM
                     if not dm_data["dm_14_sent"] and current_time >= dm_14_time:
                         try:
-                            dm_message = "Hey! It's been two weeks since your access to Premium Signals ended. We hope you've stayed active. \n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. in <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **officially invite you back into Premium Signals** and help you start compounding results again.\n\n**Feel free to join us again through this link:** https://whop.com/gold-pioneer"
+                            dm_message = "🎯 **Two weeks of free signals!** We hope you've seen the quality of our trading calls. This is your final invitation to join **@Gold Pioneer** and unlock our premium strategy breakdowns, market analysis, and exclusive high-probability setups. Don't miss out on maximizing your trading potential! 💰"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str]["dm_14_sent"] = True
                             recovered_dms += 1
@@ -645,6 +652,12 @@ class TradingBot(commands.Bot):
                 synced = await self.tree.sync()
                 print(f"🔄 Force synced {len(synced)} command(s) on ready")
                 self.first_sync_done = True
+                
+                # Command permissions are enforced by owner_check() in each command
+                if BOT_OWNER_USER_ID:
+                    print(f"🔒 Bot commands restricted to owner ID: {BOT_OWNER_USER_ID}")
+                else:
+                    print("⚠️ BOT_OWNER_USER_ID not set - all commands blocked for security")
             except Exception as e:
                 print(f"⚠️ Force sync on ready failed: {e}")
 
@@ -1575,6 +1588,88 @@ def get_remaining_time_display(member_id: str) -> str:
         print(f"Error calculating time for member {member_id}: {str(e)}")
         return "ERROR"
 
+    async def setup_owner_permissions(self):
+        """Set up command permissions to make commands visible only to bot owner"""
+        if not BOT_OWNER_USER_ID:
+            print("⚠️ BOT_OWNER_USER_ID not set - skipping permission setup")
+            return
+        
+        try:
+            owner_id = int(BOT_OWNER_USER_ID)
+            print(f"🔒 Setting up command permissions for owner: {owner_id}")
+            
+            # Get all commands
+            commands_to_setup = []
+            
+            # Get all individual commands
+            for cmd in self.tree.get_commands():
+                if hasattr(cmd, 'name') and hasattr(cmd, 'default_permissions'):
+                    commands_to_setup.append(cmd)
+            
+            # Set up permissions for each guild
+            permissions_set = 0
+            for guild in self.guilds:
+                try:
+                    # Create permission overwrite for bot owner
+                    for command in commands_to_setup:
+                        try:
+                            # Set permission for owner to use the command
+                            await command.set_permissions(
+                                guild, 
+                                {
+                                    discord.Object(id=owner_id): True
+                                },
+                                sync=False  # Don't sync immediately
+                            )
+                            permissions_set += 1
+                        except Exception as cmd_err:
+                            print(f"   ⚠️ Failed to set permission for {command.name}: {cmd_err}")
+                    
+                    # Also set permissions for giveaway group
+                    try:
+                        await giveaway_group.set_permissions(
+                            guild,
+                            {
+                                discord.Object(id=owner_id): True
+                            },
+                            sync=False
+                        )
+                        permissions_set += len(giveaway_group.commands)
+                    except Exception as group_err:
+                        print(f"   ⚠️ Failed to set giveaway group permissions: {group_err}")
+                    
+                    # Sync permissions for this guild
+                    await self.tree.sync(guild=guild)
+                    print(f"   ✅ Set permissions for commands in {guild.name}")
+                    
+                except Exception as guild_err:
+                    print(f"   ❌ Failed to set permissions in {guild.name}: {guild_err}")
+            
+            print(f"✅ Owner permissions setup complete! {permissions_set} command permissions set")
+            
+        except ValueError:
+            print(f"❌ Invalid BOT_OWNER_USER_ID format: {BOT_OWNER_USER_ID}")
+        except Exception as e:
+            print(f"❌ Error setting up owner permissions: {e}")
+
+
+# Owner permission check function
+def is_bot_owner(user_id: int) -> bool:
+    """Check if the user is the bot owner"""
+    if not BOT_OWNER_USER_ID:
+        return False  # If no owner ID is set, block all users for security
+    return str(user_id) == BOT_OWNER_USER_ID
+
+async def owner_check(interaction: discord.Interaction) -> bool:
+    """Check if the user is the bot owner and send error message if not"""
+    if not is_bot_owner(interaction.user.id):
+        await interaction.response.send_message(
+            "❌ This command can only be used by the bot owner.",
+            ephemeral=True
+        )
+        return False
+    return True
+
 
 @bot.tree.command(
     name="timedautorole",
@@ -1600,11 +1695,8 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                                   custom_minutes: int | None = None):
     """Configure the timed auto-role system with fixed 24-hour duration"""
 
-    # Check permissions
-    if not interaction.guild or not interaction.user.guild_permissions.manage_roles:
-        await interaction.response.send_message(
-            "❌ You need 'Manage Roles' permission to use this command.",
-            ephemeral=True)
+    # Check if user is bot owner
+    if not await owner_check(interaction):
         return
 
     try:
@@ -2394,12 +2486,8 @@ async def giveaway_choose_winner(interaction: discord.Interaction,
                                 user: discord.Member):
     """Add a guaranteed winner to an existing giveaway"""
     
-    # Check admin permissions
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "❌ You need administrator permissions to use this command.",
-            ephemeral=True
-        )
+    # Check if user is bot owner
+    if not await owner_check(interaction):
         return
     
     if giveaway_id not in ACTIVE_GIVEAWAYS:
@@ -2444,12 +2532,8 @@ async def giveaway_choose_winner(interaction: discord.Interaction,
 async def giveaway_end(interaction: discord.Interaction, giveaway_id: str):
     """End a giveaway early and select winners"""
     
-    # Check admin permissions
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "❌ You need administrator permissions to use this command.",
-            ephemeral=True
-        )
+    # Check if user is bot owner
+    if not await owner_check(interaction):
         return
     
     if giveaway_id not in ACTIVE_GIVEAWAYS:
@@ -2509,11 +2593,7 @@ async def create_giveaway(interaction, settings):
             inline=True
         )
         
-        embed.add_field(
-            name="🎯 Giveaway ID",
-            value=f"`{giveaway_id}`",
-            inline=True
-        )
+
         
         embed.add_field(
             name="🎪 How to Enter",
@@ -2557,6 +2637,17 @@ async def create_giveaway(interaction, settings):
             'chosen_winners': [],
             'settings': settings
         }
+        
+        # Log to bot log channel with giveaway ID
+        await bot.log_to_discord(
+            f"**Giveaway Created** 🎉\n"
+            f"ID: `{giveaway_id}`\n"
+            f"Message: {settings['message'][:100]}{'...' if len(settings['message']) > 100 else ''}\n"
+            f"Winners: {settings['winners']}\n"
+            f"Duration: {duration_text}\n"
+            f"Required Role: {settings['role'].mention}\n"
+            f"Creator: {interaction.user.mention}"
+        )
         
         # Clear temp settings
         if hasattr(bot, '_temp_giveaway'):
@@ -2695,16 +2786,30 @@ async def end_giveaway(giveaway_id, interaction=None):
                 inline=False
             )
         
-        embed.add_field(
-            name="🎯 Giveaway ID",
-            value=f"`{giveaway_id}`",
-            inline=True
-        )
+
         
         embed.set_footer(text="Ended at")
         
         # Send winner announcement
         await channel.send(embed=embed)
+        
+        # Log to bot log channel with giveaway ID
+        if final_winners:
+            winner_names = [winner.display_name for winner in final_winners]
+            await bot.log_to_discord(
+                f"**Giveaway Ended** 🏆\n"
+                f"ID: `{giveaway_id}`\n"
+                f"Winners: {', '.join(winner_names)}\n"
+                f"Total Participants: {len(valid_participants) + len(final_winners)}\n"
+                f"Channel: {channel.mention}"
+            )
+        else:
+            await bot.log_to_discord(
+                f"**Giveaway Ended** 😔\n"
+                f"ID: `{giveaway_id}`\n"
+                f"No Winners - No valid participants found\n"
+                f"Channel: {channel.mention}"
+            )
         
         # Remove from active giveaways
         del ACTIVE_GIVEAWAYS[giveaway_id]
