@@ -1673,7 +1673,7 @@ async def owner_check(interaction: discord.Interaction) -> bool:
 
 @bot.tree.command(
     name="timedautorole",
-    description="Configure timed auto-role for new members (24h fixed duration)"
+    description="Configure timed auto-role for new members"
 )
 @app_commands.describe(
     action=
@@ -2114,7 +2114,7 @@ async def timing_autocomplete(interaction: discord.Interaction, current: str):
     ]
 
 
-@bot.tree.command(name="entry", description="Create a trading signal entry")
+@bot.tree.command(name="entry", description="Create a trading signal")
 @app_commands.describe(
     entry_type="Type of entry (Long, Short, Long Swing, Short Swing)",
     pair="Trading pair",
@@ -2137,9 +2137,9 @@ Entry Type: {entry_type}
 Entry Price: {levels['entry']}
 
 **Take Profit Levels:**
-TP1: {levels['tp1']}
-TP2: {levels['tp2']}
-TP3: {levels['tp3']}
+Take Profit 1: {levels['tp1']}
+Take Profit 2: {levels['tp2']}
+Take Profit 3: {levels['tp3']}
 
 Stop Loss: {levels['sl']}"""
 
@@ -2360,18 +2360,18 @@ async def database_status_command(interaction: discord.Interaction):
 
 
 # Unified Giveaway Command
-@bot.tree.command(name="giveaway", description="Complete giveaway management - create, list, choose winners, and end")
+@bot.tree.command(name="giveaway", description="Complete giveaway management")
 @app_commands.describe(
     action="What do you want to do with giveaways?",
     message="[CREATE] Custom giveaway message explaining what it's for",
     required_role="[CREATE] Role required to enter the giveaway", 
-    winners="[CREATE] Number of winners to select",
+    winners="[CREATE] Number of users that can win the giveaway",
     weeks="[CREATE] Number of weeks for giveaway duration",
     days="[CREATE] Number of days for giveaway duration",
     hours="[CREATE] Number of hours for giveaway duration", 
     minutes="[CREATE] Number of minutes for giveaway duration",
-    giveaway_id="[CHOOSE_WINNER/END] ID of the giveaway (use action=list to see active ones)",
-    user="[CHOOSE_WINNER] User to guarantee as a winner"
+    giveaway_id="[SELECT/END] ID of the giveaway (use action=list to see active ones)",
+    user="[SELECT]"
 )
 async def giveaway_command(interaction: discord.Interaction,
                           action: str,
@@ -2581,10 +2581,10 @@ async def giveaway_command(interaction: discord.Interaction,
 @giveaway_command.autocomplete('action')
 async def giveaway_action_autocomplete(interaction: discord.Interaction, current: str):
     actions = [
-        app_commands.Choice(name="📝 Create New Giveaway", value="create"),
-        app_commands.Choice(name="📋 List Active Giveaways", value="list"), 
-        app_commands.Choice(name="🎯 Choose Guaranteed Winner", value="choose_winner"),
-        app_commands.Choice(name="🏁 End Giveaway Early", value="end")
+        app_commands.Choice(name="📝 Create", value="create"),
+        app_commands.Choice(name="📋 List", value="list"), 
+        app_commands.Choice(name="🎯 Select", value="choose_winner"),
+        app_commands.Choice(name="🏁 End", value="end")
     ]
     return [choice for choice in actions if current.lower() in choice.name.lower()]
 
