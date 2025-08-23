@@ -1186,7 +1186,7 @@ class TradingBot(commands.Bot):
                         
                         # Send congratulations DM
                         try:
-                            dm_message = f"Congratulations! You've leveled up to {new_level}."
+                            dm_message = f"Congratulations! You've leveled up to level {new_level}!"
                             await user.send(dm_message)
                             await self.log_to_discord(f"📬 Sent level-up DM to {member.display_name} for Level {new_level}")
                         except discord.Forbidden:
