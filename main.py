@@ -1,3 +1,21 @@
+"""
+Discord Trading Bot - Professional Signal Distribution System
+
+🚀 PRODUCTION DEPLOYMENT: RENDER.COM 24/7 HOSTING
+📊 DATABASE: Render PostgreSQL (managed instance)
+🌍 REGION: Oregon, Python 3.11.0 runtime
+
+DEPLOYMENT INFO:
+- Hosted on Render.com web service (24/7 uptime)
+- PostgreSQL database managed by Render
+- Health endpoint: /health for monitoring
+- Environment variables set in Render dashboard
+- Manual deployments via render.yaml configuration
+
+Author: Advanced Trading Bot System
+Version: Production Ready - Render Optimized
+"""
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -10,6 +28,8 @@ import json
 from datetime import datetime, timedelta, timezone
 import asyncpg
 import logging
+from typing import Optional, Dict
+import re
 
 # Try to import pytz for proper timezone handling, fallback to basic timezone if not available
 try:
@@ -31,6 +51,11 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
     print(
         "Pyrogram not available - Install with: pip install pyrogram tgcrypto")
+
+# Price tracking APIs
+import requests
+import re
+from typing import Dict, List, Optional, Tuple
 
 # Load environment variables
 load_dotenv()
@@ -107,6 +132,29 @@ ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
 
 # Global storage for invite tracking
 INVITE_TRACKING = {}  # invite_code: {"nickname": str, "total_joins": int, "total_left": int, "current_members": int, "creator_id": int, "guild_id": int}
+
+# Live price tracking system configuration
+PRICE_TRACKING_CONFIG = {
+    "enabled": False,
+    "excluded_channel_id": "1394958907943817326",
+    "owner_user_id": "462707111365836801",
+    "signal_keyword": "Trade Signal For:",
+    "active_trades": {},  # message_id: {trade_data}
+    "api_keys": {
+        "fxapi_key": os.getenv("FXAPI_KEY", ""),
+        "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY", ""),
+        "twelve_data_key": os.getenv("TWELVE_DATA_KEY", ""),
+        "fmp_key": os.getenv("FMP_KEY", "")
+    },
+    "api_endpoints": {
+        "fxapi": "https://fxapi.com/api/latest",
+        "alpha_vantage": "https://www.alphavantage.co/query",
+        "twelve_data": "https://api.twelvedata.com/price",
+        "fmp": "https://financialmodelingprep.com/api/v3/quote"
+    },
+    "last_price_check": {},  # pair: last_check_timestamp
+    "check_interval": 30  # seconds between price checks
+}
 
 # Level system configuration
 LEVEL_SYSTEM = {
@@ -425,6 +473,39 @@ class TradingBot(commands.Bot):
         except Exception as e:
             await self.log_to_discord(f"❌ Error during offline DM recovery: {str(e)}")
             print(f"Offline DM recovery error: {e}")
+
+    @tasks.loop(seconds=30)
+    async def price_tracking_task(self):
+        """Background task to monitor live prices for active trades"""
+        if not PRICE_TRACKING_CONFIG["enabled"]:
+            return
+        
+        if not PRICE_TRACKING_CONFIG["active_trades"]:
+            return
+        
+        try:
+            # Check each active trade
+            trades_to_remove = []
+            for message_id, trade_data in list(PRICE_TRACKING_CONFIG["active_trades"].items()):
+                try:
+                    # Check if price levels have been hit
+                    level_hit = await self.check_price_levels(message_id, trade_data)
+                    if level_hit:
+                        # Trade was closed, will be removed by the handler
+                        continue
+                        
+                except Exception as e:
+                    print(f"Error checking price for trade {message_id}: {e}")
+                    trades_to_remove.append(message_id)
+            
+            # Remove failed trades
+            for message_id in trades_to_remove:
+                if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+                    del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+                    print(f"Removed failed trade {message_id} from tracking")
+                    
+        except Exception as e:
+            print(f"Error in price tracking loop: {e}")
 
     @tasks.loop(minutes=30)
     async def heartbeat_task(self):
@@ -745,6 +826,10 @@ class TradingBot(commands.Bot):
         # Start the follow-up DM task
         if not self.followup_dm_task.is_running():
             self.followup_dm_task.start()
+
+        # Start the price tracking task
+        if not self.price_tracking_task.is_running():
+            self.price_tracking_task.start()
 
         # Database initialization is now handled in setup_hook
 
@@ -1077,7 +1162,31 @@ class TradingBot(commands.Bot):
             await self.log_to_discord(f"❌ Error tracking member leave for {member.display_name}: {str(e)}")
 
     async def on_message(self, message):
-        """Handle messages for level system"""
+        """Handle messages for level system and price tracking"""
+        # Check for trading signals (only from owner or bot)
+        if (PRICE_TRACKING_CONFIG["enabled"] and 
+            str(message.channel.id) != PRICE_TRACKING_CONFIG["excluded_channel_id"] and
+            (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot) and
+            PRICE_TRACKING_CONFIG["signal_keyword"] in message.content):
+            
+            try:
+                # Parse the signal message
+                trade_data = self.parse_signal_message(message.content)
+                if trade_data:
+                    # Add channel and message info
+                    trade_data["channel_id"] = message.channel.id
+                    trade_data["message_id"] = str(message.id)
+                    trade_data["timestamp"] = message.created_at.isoformat()
+                    
+                    # Add to active trades
+                    PRICE_TRACKING_CONFIG["active_trades"][str(message.id)] = trade_data
+                    
+                    print(f"✅ Started tracking signal for {trade_data['pair']} ({trade_data['action']}) - Message ID: {message.id}")
+                else:
+                    print(f"❌ Could not parse signal from message: {message.content[:100]}...")
+            except Exception as e:
+                print(f"Error processing signal message: {e}")
+        
         # Process message for level system
         await self.process_message_for_levels(message)
 
@@ -1278,6 +1387,307 @@ class TradingBot(commands.Bot):
                     )
         except Exception as e:
             print(f"❌ Error saving invite tracking to database: {str(e)}")
+
+    # ===== LIVE PRICE TRACKING METHODS =====
+    
+    async def get_live_price(self, pair: str) -> Optional[float]:
+        """Get live price for a trading pair using multiple API fallbacks"""
+        if not PRICE_TRACKING_CONFIG["enabled"]:
+            return None
+            
+        # Normalize pair format for different APIs
+        pair_clean = pair.replace("/", "").upper()
+        
+        # Try FXApi first
+        try:
+            if PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
+                params = {
+                    "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
+                    "symbols": pair_clean
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and pair_clean in data["rates"]:
+                                return float(data["rates"][pair_clean])
+        except Exception as e:
+            print(f"FXApi failed for {pair}: {e}")
+        
+        # Try Twelve Data API
+        try:
+            if PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
+                params = {
+                    "symbol": pair_clean,
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "price" in data:
+                                return float(data["price"])
+        except Exception as e:
+            print(f"Twelve Data API failed for {pair}: {e}")
+        
+        # Try Alpha Vantage API
+        try:
+            if PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
+                params = {
+                    "function": "CURRENCY_EXCHANGE_RATE",
+                    "from_currency": pair_clean[:3],
+                    "to_currency": pair_clean[3:],
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "Realtime Currency Exchange Rate" in data:
+                                rate_data = data["Realtime Currency Exchange Rate"]
+                                if "5. Exchange Rate" in rate_data:
+                                    return float(rate_data["5. Exchange Rate"])
+        except Exception as e:
+            print(f"Alpha Vantage API failed for {pair}: {e}")
+        
+        # Try Financial Modeling Prep API
+        try:
+            if PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{pair_clean}"
+                params = {
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
+                                return float(data[0]["price"])
+        except Exception as e:
+            print(f"FMP API failed for {pair}: {e}")
+        
+        print(f"All APIs failed for {pair}")
+        return None
+
+    def parse_signal_message(self, content: str) -> Optional[Dict]:
+        """Parse a trading signal message to extract trade data"""
+        try:
+            lines = content.split('\n')
+            trade_data = {
+                "pair": None,
+                "action": None,
+                "entry": None,
+                "tp1": None,
+                "tp2": None,
+                "tp3": None,
+                "sl": None,
+                "status": "active",
+                "tp_hits": [],
+                "breakeven_active": False
+            }
+            
+            # Find pair from "Trade Signal For: PAIR"
+            for line in lines:
+                if "Trade Signal For:" in line:
+                    parts = line.split("Trade Signal For:")
+                    if len(parts) > 1:
+                        trade_data["pair"] = parts[1].strip()
+                        break
+            
+            # Extract action (BUY/SELL)
+            for line in lines:
+                if "BUY" in line.upper() or "SELL" in line.upper():
+                    if "BUY" in line.upper():
+                        trade_data["action"] = "BUY"
+                    else:
+                        trade_data["action"] = "SELL"
+                    break
+            
+            # Extract prices using regex
+            entry_match = re.search(r'Entry[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            if entry_match:
+                trade_data["entry"] = float(entry_match.group(1))
+            
+            tp1_match = re.search(r'TP1[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            if tp1_match:
+                trade_data["tp1"] = float(tp1_match.group(1))
+            
+            tp2_match = re.search(r'TP2[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            if tp2_match:
+                trade_data["tp2"] = float(tp2_match.group(1))
+            
+            tp3_match = re.search(r'TP3[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            if tp3_match:
+                trade_data["tp3"] = float(tp3_match.group(1))
+            
+            sl_match = re.search(r'SL[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            if sl_match:
+                trade_data["sl"] = float(sl_match.group(1))
+            
+            # Validate required fields
+            if all([trade_data["pair"], trade_data["action"], trade_data["entry"], 
+                   trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"]]):
+                return trade_data
+            
+        except Exception as e:
+            print(f"Error parsing signal: {e}")
+        
+        return None
+
+    async def check_price_levels(self, message_id: str, trade_data: Dict) -> bool:
+        """Check if current price has hit any TP/SL levels"""
+        try:
+            current_price = await self.get_live_price(trade_data["pair"])
+            if current_price is None:
+                return False
+            
+            action = trade_data["action"]
+            entry = trade_data["entry"]
+            
+            # Determine if we should check breakeven (after TP2 hit)
+            if trade_data["breakeven_active"]:
+                # Check if price returned to entry (breakeven SL)
+                if action == "BUY" and current_price <= entry:
+                    await self.handle_breakeven_hit(message_id, trade_data)
+                    return True
+                elif action == "SELL" and current_price >= entry:
+                    await self.handle_breakeven_hit(message_id, trade_data)
+                    return True
+            else:
+                # Check SL first
+                if action == "BUY" and current_price <= trade_data["sl"]:
+                    await self.handle_sl_hit(message_id, trade_data)
+                    return True
+                elif action == "SELL" and current_price >= trade_data["sl"]:
+                    await self.handle_sl_hit(message_id, trade_data)
+                    return True
+                
+                # Check TP levels
+                if action == "BUY":
+                    if "tp3" not in trade_data["tp_hits"] and current_price >= trade_data["tp3"]:
+                        await self.handle_tp_hit(message_id, trade_data, "tp3")
+                        return True
+                    elif "tp2" not in trade_data["tp_hits"] and current_price >= trade_data["tp2"]:
+                        await self.handle_tp_hit(message_id, trade_data, "tp2")
+                        return True
+                    elif "tp1" not in trade_data["tp_hits"] and current_price >= trade_data["tp1"]:
+                        await self.handle_tp_hit(message_id, trade_data, "tp1")
+                        return True
+                
+                elif action == "SELL":
+                    if "tp3" not in trade_data["tp_hits"] and current_price <= trade_data["tp3"]:
+                        await self.handle_tp_hit(message_id, trade_data, "tp3")
+                        return True
+                    elif "tp2" not in trade_data["tp_hits"] and current_price <= trade_data["tp2"]:
+                        await self.handle_tp_hit(message_id, trade_data, "tp2")
+                        return True
+                    elif "tp1" not in trade_data["tp_hits"] and current_price <= trade_data["tp1"]:
+                        await self.handle_tp_hit(message_id, trade_data, "tp1")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error checking price levels for {message_id}: {e}")
+            return False
+
+    async def handle_tp_hit(self, message_id: str, trade_data: Dict, tp_level: str):
+        """Handle when a TP level is hit"""
+        try:
+            # Update trade data
+            trade_data["tp_hits"].append(tp_level)
+            
+            if tp_level == "tp2":
+                # After TP2, activate breakeven
+                trade_data["breakeven_active"] = True
+                trade_data["status"] = "active (tp2 hit - breakeven active)"
+            elif tp_level == "tp1":
+                trade_data["status"] = "active (tp1 hit)"
+            elif tp_level == "tp3":
+                trade_data["status"] = "completed (tp3 hit)"
+                # Remove from active trades after TP3
+                if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+                    del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+            
+            # Send notification
+            await self.send_tp_notification(message_id, trade_data, tp_level)
+            
+        except Exception as e:
+            print(f"Error handling TP hit: {e}")
+
+    async def handle_sl_hit(self, message_id: str, trade_data: Dict):
+        """Handle when SL is hit"""
+        try:
+            trade_data["status"] = "closed (sl hit)"
+            
+            # Remove from active trades
+            if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+                del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+            
+            # Send notification
+            await self.send_sl_notification(message_id, trade_data)
+            
+        except Exception as e:
+            print(f"Error handling SL hit: {e}")
+
+    async def handle_breakeven_hit(self, message_id: str, trade_data: Dict):
+        """Handle when price returns to breakeven after TP2"""
+        try:
+            trade_data["status"] = "closed (breakeven after tp2)"
+            
+            # Remove from active trades
+            if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+                del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+            
+            # Send breakeven notification
+            await self.send_breakeven_notification(message_id, trade_data)
+            
+        except Exception as e:
+            print(f"Error handling breakeven hit: {e}")
+
+    async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str):
+        """Send TP hit notification"""
+        try:
+            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
+            tp_number = tp_level.upper()
+            notification = f"@everyone **{tp_number} HAS BEEN HIT!** 🎯"
+            
+            if tp_level == "tp2":
+                notification += f"\n\n**SL moved to breakeven (entry: {trade_data['entry']})**"
+            
+            await message.reply(notification)
+            
+        except Exception as e:
+            print(f"Error sending TP notification: {e}")
+
+    async def send_sl_notification(self, message_id: str, trade_data: Dict):
+        """Send SL hit notification"""
+        try:
+            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
+            notification = f"@everyone **SL HAS BEEN HIT!** ❌"
+            
+            await message.reply(notification)
+            
+        except Exception as e:
+            print(f"Error sending SL notification: {e}")
+
+    async def send_breakeven_notification(self, message_id: str, trade_data: Dict):
+        """Send breakeven hit notification"""
+        try:
+            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
+            notification = f"This pair reversed to breakeven after we hit TP2. As we stated, we had already moved our SL to breakeven, so we were out safe.\n@everyone"
+            
+            await message.reply(notification)
+            
+        except Exception as e:
+            print(f"Error sending breakeven notification: {e}")
 
     async def track_member_join_via_invite(self, member, invite_code):
         """Track a member joining via specific invite"""
@@ -3704,6 +4114,143 @@ async def invite_tracking_command(interaction: discord.Interaction, action: str,
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error with invite tracking: {str(e)}", ephemeral=True)
+
+
+# ===== PRICE TRACKING COMMANDS =====
+
+@bot.tree.command(name="pricetracking", description="[OWNER ONLY] Toggle live price tracking system on/off")
+@app_commands.describe(enabled="Enable or disable the price tracking system")
+async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool):
+    """Toggle price tracking system"""
+    if not await owner_check(interaction):
+        return
+    
+    PRICE_TRACKING_CONFIG["enabled"] = enabled
+    status = "enabled" if enabled else "disabled"
+    
+    embed = discord.Embed(
+        title="🔄 Price Tracking System",
+        description=f"Live price tracking has been **{status}**",
+        color=discord.Color.green() if enabled else discord.Color.red()
+    )
+    
+    if enabled:
+        embed.add_field(
+            name="📊 Configuration",
+            value=f"• **Monitoring**: Signals containing '{PRICE_TRACKING_CONFIG['signal_keyword']}'\n"
+                  f"• **From**: Owner and bot messages only\n"
+                  f"• **Excluding**: Channel ID {PRICE_TRACKING_CONFIG['excluded_channel_id']}\n"
+                  f"• **Check Interval**: {PRICE_TRACKING_CONFIG['check_interval']} seconds",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="activetrades", description="[OWNER ONLY] View all currently tracked trading signals")
+async def active_trades(interaction: discord.Interaction):
+    """Show active trades being monitored"""
+    if not await owner_check(interaction):
+        return
+    
+    if not PRICE_TRACKING_CONFIG["enabled"]:
+        embed = discord.Embed(
+            title="📊 Active Trades",
+            description="❌ Price tracking system is currently disabled",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    active_trades = PRICE_TRACKING_CONFIG["active_trades"]
+    
+    if not active_trades:
+        embed = discord.Embed(
+            title="📊 Active Trades",
+            description="✅ No active trades being monitored",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    embed = discord.Embed(
+        title="📊 Active Trades",
+        description=f"Currently monitoring **{len(active_trades)}** active trades:",
+        color=discord.Color.green()
+    )
+    
+    for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:10]):  # Limit to 10 for embed size
+        status_emoji = "🟢" if trade_data["status"] == "active" else "🟡"
+        tp_status = f"TP Hits: {', '.join(trade_data['tp_hits']) if trade_data['tp_hits'] else 'None'}"
+        breakeven_text = " (Breakeven Active)" if trade_data.get("breakeven_active") else ""
+        
+        embed.add_field(
+            name=f"{status_emoji} {trade_data['pair']} - {trade_data['action']}",
+            value=f"Entry: {trade_data['entry']}\n"
+                  f"{tp_status}{breakeven_text}\n"
+                  f"Message: {message_id[:8]}...",
+            inline=True
+        )
+    
+    if len(active_trades) > 10:
+        embed.set_footer(text=f"Showing 10 of {len(active_trades)} active trades")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pricetest", description="[OWNER ONLY] Test live price retrieval for a trading pair")
+@app_commands.describe(pair="Trading pair to test (e.g., EURUSD, GBPJPY)")
+async def test_price_retrieval(interaction: discord.Interaction, pair: str):
+    """Test price retrieval for a trading pair"""
+    if not await owner_check(interaction):
+        return
+    
+    if not PRICE_TRACKING_CONFIG["enabled"]:
+        await interaction.response.send_message("❌ Price tracking system is disabled", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    
+    try:
+        price = await bot.get_live_price(pair)
+        
+        embed = discord.Embed(
+            title="💰 Price Test",
+            color=discord.Color.green() if price else discord.Color.red()
+        )
+        
+        if price:
+            embed.add_field(
+                name=f"✅ {pair.upper()}",
+                value=f"Current Price: **{price}**",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name=f"❌ {pair.upper()}",
+                value="Could not retrieve price from any API",
+                inline=False
+            )
+            
+        # Show API status
+        api_status = []
+        for api_name, api_key in PRICE_TRACKING_CONFIG["api_keys"].items():
+            status = "✅" if api_key else "❌"
+            api_status.append(f"{status} {api_name.replace('_', ' ').title()}")
+        
+        embed.add_field(
+            name="🔑 API Status",
+            value="\n".join(api_status),
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        embed = discord.Embed(
+            title="💰 Price Test",
+            description=f"❌ Error testing price retrieval: {str(e)}",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
 
 
 # Web server for health checks

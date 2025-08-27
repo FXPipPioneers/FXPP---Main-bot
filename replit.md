@@ -15,6 +15,7 @@ This project is a professional Discord bot designed for trading signal distribut
 - **Added invite management**: New `/invitetracking` command for managing server invite statistics and collaboration tracking
 - **Enhanced member tracking**: Updated member join/leave handlers to properly track invite usage and statistics
 - **Enforced owner-only commands**: All commands now restricted to Discord ID 462707111365836801
+- **IMPLEMENTED COMPREHENSIVE LIVE PRICE TRACKING SYSTEM**: Complete real-time price monitoring with multiple API fallbacks, automatic TP/SL detection, breakeven logic after TP2, and professional notification system
 
 ## 🚀 PRODUCTION DEPLOYMENT - RENDER.COM
 
@@ -42,6 +43,7 @@ This project is a professional Discord bot designed for trading signal distribut
 - TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER
 - TELEGRAM_SOURCE_CHAT_ID, TELEGRAM_DEFAULT_CHANNELS, TELEGRAM_DEFAULT_ROLES
 - DATABASE_URL (automatically provided by Render PostgreSQL)
+- **Price Tracking APIs**: FXAPI_KEY, ALPHA_VANTAGE_KEY, TWELVE_DATA_KEY, FMP_KEY (for live price monitoring)
 
 ### Deployment Files
 - `render.yaml`: Service configuration for Render deployment
@@ -75,6 +77,9 @@ This project is a professional Discord bot designed for trading signal distribut
 - **`/timedautorole`**: Manages automatic role assignment system for new members with configurable duration and weekend handling.
 - **`/dmstatus`**: Tracks and displays which users have received 3, 7, or 14-day follow-up messages after their timed auto-role expires.
 - **`/invitetracking`**: Comprehensive invite tracking system for managing server invites, setting nicknames, viewing statistics, and tracking member retention through specific invite links.
+- **`/pricetracking`**: Toggle the live price tracking system on/off with real-time monitoring configuration.
+- **`/activetrades`**: View all currently tracked trading signals with status, TP hits, and breakeven information.
+- **`/pricetest`**: Test live price retrieval for any trading pair using multiple API fallbacks.
 
 #### Trading Logic
 - **Pip Calculation Engine**: Instrument-specific pip value calculations.
@@ -96,6 +101,17 @@ This project is a professional Discord bot designed for trading signal distribut
 - **Custom DM Notifications**: Sends personalized messages when roles expire.
 - **Persistent Storage**: Maintains member tracking across bot restarts.
 - **Admin Controls**: `/timedautorole` command for management.
+
+#### Live Price Tracking System
+- **Real-time Monitoring**: Automatically detects and tracks trading signals containing "Trade Signal For:" from owner and bot messages.
+- **Multiple API Fallbacks**: Uses FXApi, Twelve Data, Alpha Vantage, and Financial Modeling Prep APIs for reliable price data.
+- **Smart TP/SL Detection**: Monitors all TP1, TP2, TP3, and SL levels with precise price comparison logic.
+- **Breakeven Logic**: After TP2 is hit, automatically moves SL to entry price and monitors for breakeven scenarios.
+- **Professional Notifications**: Sends @everyone alerts when TP/SL levels are hit with detailed status updates.
+- **Background Task**: 30-second interval price checking for all active trades with error handling and cleanup.
+- **Owner-Only Control**: Complete system management restricted to Discord ID 462707111365836801.
+- **Automatic Signal Parsing**: Intelligent regex-based extraction of pair, action, entry, TP1-3, and SL from signal messages.
+- **Excluded Channel**: Respects excluded channel ID 1394958907943817326 to prevent tracking test signals.
 
 ### Data Flow
 - **Command Input**: User executes slash command.
