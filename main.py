@@ -64,7 +64,7 @@ DISCORD_CLIENT_ID_PART2 = os.getenv("DISCORD_CLIENT_ID_PART2", "")
 DISCORD_CLIENT_ID = DISCORD_CLIENT_ID_PART1 + DISCORD_CLIENT_ID_PART2
 
 # Bot owner user ID for command restrictions
-BOT_OWNER_USER_ID = os.getenv("BOT_OWNER_USER_ID", "")
+BOT_OWNER_USER_ID = os.getenv("BOT_OWNER_USER_ID", "462707111365836801")
 if BOT_OWNER_USER_ID:
     print(f"✅ Bot owner ID loaded: {BOT_OWNER_USER_ID}")
 else:
@@ -104,6 +104,9 @@ GIVEAWAY_CHANNEL_ID = 1405490561963786271
 
 # Global storage for active giveaways
 ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
+
+# Global storage for invite tracking
+INVITE_TRACKING = {}  # invite_code: {"nickname": str, "total_joins": int, "total_left": int, "current_members": int, "creator_id": int, "guild_id": int}
 
 # Level system configuration
 LEVEL_SYSTEM = {
@@ -536,6 +539,34 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Invite tracking table
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS invite_tracking (
+                        invite_code VARCHAR(20) PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        creator_id BIGINT NOT NULL,
+                        nickname VARCHAR(255),
+                        total_joins INTEGER DEFAULT 0,
+                        total_left INTEGER DEFAULT 0,
+                        current_members INTEGER DEFAULT 0,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+
+                # Member join tracking via invites
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS member_joins (
+                        id SERIAL PRIMARY KEY,
+                        member_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        invite_code VARCHAR(20),
+                        joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        left_at TIMESTAMP WITH TIME ZONE NULL,
+                        is_currently_member BOOLEAN DEFAULT TRUE
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
@@ -546,6 +577,9 @@ class TradingBot(commands.Bot):
             
             # Load level system data
             await self.load_level_system()
+            
+            # Load invite tracking data
+            await self.load_invite_tracking()
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -891,6 +925,24 @@ class TradingBot(commands.Bot):
                 if used_invite:
                     break
 
+            # Track the invite usage if we found one
+            if used_invite:
+                # Track the member join via this specific invite
+                await self.track_member_join_via_invite(member, used_invite.code)
+                
+                # Initialize tracking for this invite if not already tracked
+                if used_invite.code not in INVITE_TRACKING:
+                    INVITE_TRACKING[used_invite.code] = {
+                        "nickname": f"Invite-{used_invite.code[:8]}",  # Default nickname
+                        "total_joins": 0,
+                        "total_left": 0,
+                        "current_members": 0,
+                        "creator_id": used_invite.inviter.id if used_invite.inviter else 0,
+                        "guild_id": member.guild.id,
+                        "created_at": datetime.now(AMSTERDAM_TZ).isoformat(),
+                        "last_updated": datetime.now(AMSTERDAM_TZ).isoformat()
+                    }
+
             # If we found the invite and it was created by a bot, ignore this member
             if used_invite and used_invite.inviter and used_invite.inviter.bot:
                 await self.log_to_discord(
@@ -1014,6 +1066,15 @@ class TradingBot(commands.Bot):
             await self.log_to_discord(
                 f"❌ Error assigning auto-role to {member.display_name}: {str(e)}"
             )
+
+    async def on_member_remove(self, member):
+        """Handle member leaving the server"""
+        try:
+            # Track the member leaving for invite statistics
+            await self.track_member_leave(member)
+            await self.log_to_discord(f"👋 {member.display_name} left the server - invite statistics updated")
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error tracking member leave for {member.display_name}: {str(e)}")
 
     async def on_message(self, message):
         """Handle messages for level system"""
@@ -1162,6 +1223,122 @@ class TradingBot(commands.Bot):
                 
         except Exception as e:
             print(f"❌ Error loading level system from database: {str(e)}")
+
+    async def load_invite_tracking(self):
+        """Load invite tracking data from database"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Load invite tracking data
+                rows = await conn.fetch('SELECT * FROM invite_tracking')
+                for row in rows:
+                    INVITE_TRACKING[row['invite_code']] = {
+                        "nickname": row['nickname'],
+                        "total_joins": row['total_joins'],
+                        "total_left": row['total_left'],
+                        "current_members": row['current_members'],
+                        "creator_id": row['creator_id'],
+                        "guild_id": row['guild_id'],
+                        "created_at": row['created_at'].isoformat(),
+                        "last_updated": row['last_updated'].isoformat()
+                    }
+                
+                if INVITE_TRACKING:
+                    print(f"✅ Loaded invite tracking data for {len(INVITE_TRACKING)} invites")
+                else:
+                    print("📋 No existing invite tracking data found - starting fresh")
+        
+        except Exception as e:
+            print(f"❌ Error loading invite tracking from database: {str(e)}")
+
+    async def save_invite_tracking(self):
+        """Save invite tracking data to database"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Update all tracked invites
+                for invite_code, data in INVITE_TRACKING.items():
+                    await conn.execute(
+                        '''
+                        INSERT INTO invite_tracking 
+                        (invite_code, guild_id, creator_id, nickname, total_joins, total_left, current_members, last_updated)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                        ON CONFLICT (invite_code) DO UPDATE SET
+                            nickname = $4,
+                            total_joins = $5,
+                            total_left = $6,
+                            current_members = $7,
+                            last_updated = NOW()
+                        ''', invite_code, data["guild_id"], data["creator_id"], 
+                        data["nickname"], data["total_joins"], data["total_left"], data["current_members"]
+                    )
+        except Exception as e:
+            print(f"❌ Error saving invite tracking to database: {str(e)}")
+
+    async def track_member_join_via_invite(self, member, invite_code):
+        """Track a member joining via specific invite"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Record the join
+                await conn.execute(
+                    '''
+                    INSERT INTO member_joins (member_id, guild_id, invite_code, joined_at, is_currently_member)
+                    VALUES ($1, $2, $3, NOW(), TRUE)
+                    ''', member.id, member.guild.id, invite_code
+                )
+                
+                # Update invite tracking statistics
+                if invite_code in INVITE_TRACKING:
+                    INVITE_TRACKING[invite_code]["total_joins"] += 1
+                    INVITE_TRACKING[invite_code]["current_members"] += 1
+                    await self.save_invite_tracking()
+                    
+        except Exception as e:
+            print(f"❌ Error tracking member join via invite: {str(e)}")
+
+    async def track_member_leave(self, member):
+        """Track a member leaving and update invite statistics"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Find the member's join record and update it
+                join_record = await conn.fetchrow(
+                    '''
+                    SELECT invite_code FROM member_joins 
+                    WHERE member_id = $1 AND guild_id = $2 AND is_currently_member = TRUE
+                    ORDER BY joined_at DESC LIMIT 1
+                    ''', member.id, member.guild.id
+                )
+                
+                if join_record and join_record['invite_code']:
+                    invite_code = join_record['invite_code']
+                    
+                    # Update the member's record
+                    await conn.execute(
+                        '''
+                        UPDATE member_joins 
+                        SET left_at = NOW(), is_currently_member = FALSE
+                        WHERE member_id = $1 AND guild_id = $2 AND is_currently_member = TRUE
+                        ''', member.id, member.guild.id
+                    )
+                    
+                    # Update invite tracking statistics
+                    if invite_code in INVITE_TRACKING:
+                        INVITE_TRACKING[invite_code]["total_left"] += 1
+                        INVITE_TRACKING[invite_code]["current_members"] = max(0, INVITE_TRACKING[invite_code]["current_members"] - 1)
+                        await self.save_invite_tracking()
+                
+        except Exception as e:
+            print(f"❌ Error tracking member leave: {str(e)}")
 
     def calculate_level(self, message_count):
         """Calculate user level based on message count"""
@@ -1653,9 +1830,9 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
 
     # Calculate pip amounts
     tp1_pips = 20 * pip_value
-    tp2_pips = 50 * pip_value
-    tp3_pips = 100 * pip_value
-    sl_pips = 70 * pip_value
+    tp2_pips = 40 * pip_value
+    tp3_pips = 70 * pip_value
+    sl_pips = 50 * pip_value
 
     # Determine direction based on entry type
     is_buy = entry_type.lower().startswith('buy')
@@ -3286,6 +3463,247 @@ async def stats_command(interaction: discord.Interaction,
     except Exception as e:
         await interaction.response.send_message(
             f"❌ Error sending stats: {str(e)}", ephemeral=True)
+
+
+# ===== DM TRACKING COMMAND =====
+@bot.tree.command(
+    name="dmstatus",
+    description="Check which users have received 3, 7, or 14 day follow-up messages"
+)
+@app_commands.describe(
+    message_type="Which message type to check: 3day, 7day, 14day, or all"
+)
+async def dm_status_command(interaction: discord.Interaction, message_type: str = "all"):
+    """Check DM status for timed auto-role follow-up messages"""
+    if not await owner_check(interaction):
+        return
+
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        if not AUTO_ROLE_CONFIG["dm_schedule"]:
+            await interaction.followup.send("📬 No DM schedule data found.", ephemeral=True)
+            return
+
+        # Filter message types
+        valid_types = ["all", "3day", "7day", "14day"]
+        if message_type.lower() not in valid_types:
+            await interaction.followup.send(f"❌ Invalid message type. Use: {', '.join(valid_types)}", ephemeral=True)
+            return
+
+        # Create status report
+        status_report = "📬 **DM STATUS REPORT**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        total_scheduled = len(AUTO_ROLE_CONFIG["dm_schedule"])
+        sent_3day = sent_7day = sent_14day = 0
+        pending_users = []
+
+        for member_id, dm_data in AUTO_ROLE_CONFIG["dm_schedule"].items():
+            try:
+                # Get member info
+                guild = interaction.guild
+                member = guild.get_member(int(member_id)) if guild else None
+                member_name = member.display_name if member else f"User-{member_id}"
+                
+                # Check DM status
+                dm_3_sent = dm_data.get("dm_3_sent", False)
+                dm_7_sent = dm_data.get("dm_7_sent", False)
+                dm_14_sent = dm_data.get("dm_14_sent", False)
+                
+                if dm_3_sent: sent_3day += 1
+                if dm_7_sent: sent_7day += 1
+                if dm_14_sent: sent_14day += 1
+                
+                # Filter by message type
+                if message_type.lower() == "3day" and dm_3_sent:
+                    status_report += f"✅ **3-Day**: {member_name}\n"
+                elif message_type.lower() == "7day" and dm_7_sent:
+                    status_report += f"✅ **7-Day**: {member_name}\n"
+                elif message_type.lower() == "14day" and dm_14_sent:
+                    status_report += f"✅ **14-Day**: {member_name}\n"
+                elif message_type.lower() == "all":
+                    dm_status = []
+                    if dm_3_sent: dm_status.append("3✅")
+                    if dm_7_sent: dm_status.append("7✅")
+                    if dm_14_sent: dm_status.append("14✅")
+                    if not dm_status: dm_status.append("⏳")
+                    
+                    status_report += f"• **{member_name}**: {' '.join(dm_status)}\n"
+                
+                # Track pending users (haven't received 14-day message yet)
+                if not dm_14_sent:
+                    pending_users.append(member_name)
+                    
+            except Exception as e:
+                status_report += f"❌ Error processing member {member_id}: {str(e)}\n"
+
+        # Add summary
+        status_report += f"\n**📊 SUMMARY**\n"
+        status_report += f"• Total scheduled: **{total_scheduled}**\n"
+        status_report += f"• 3-day messages sent: **{sent_3day}**\n"
+        status_report += f"• 7-day messages sent: **{sent_7day}**\n"
+        status_report += f"• 14-day messages sent: **{sent_14day}**\n"
+        status_report += f"• Still pending: **{len(pending_users)}**\n"
+
+        # Split message if too long
+        if len(status_report) > 2000:
+            # Send summary first
+            summary = f"📬 **DM STATUS SUMMARY**\n━━━━━━━━━━━━━━━━━━━━━━\n"
+            summary += f"• Total scheduled: **{total_scheduled}**\n"
+            summary += f"• 3-day messages sent: **{sent_3day}**\n"
+            summary += f"• 7-day messages sent: **{sent_7day}**\n"
+            summary += f"• 14-day messages sent: **{sent_14day}**\n"
+            summary += f"• Still pending: **{len(pending_users)}**\n\n"
+            summary += f"*Use `/dmstatus 3day`, `/dmstatus 7day`, or `/dmstatus 14day` for detailed lists.*"
+            
+            await interaction.followup.send(summary, ephemeral=True)
+        else:
+            await interaction.followup.send(status_report, ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error checking DM status: {str(e)}", ephemeral=True)
+
+
+# ===== INVITE TRACKING COMMANDS =====
+@bot.tree.command(
+    name="invitetracking",
+    description="Manage server invite tracking and statistics"
+)
+@app_commands.describe(
+    action="Action: list, nickname, stats, or reset",
+    invite_code="Invite code (for nickname action)",
+    nickname="Nickname for the invite (for nickname action)"
+)
+async def invite_tracking_command(interaction: discord.Interaction, action: str, invite_code: str = None, nickname: str = None):
+    """Manage invite tracking system"""
+    if not await owner_check(interaction):
+        return
+
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        if action.lower() == "list":
+            # List all tracked invites
+            if not INVITE_TRACKING:
+                await interaction.followup.send("📋 No invites are currently being tracked.", ephemeral=True)
+                return
+            
+            report = "📋 **INVITE TRACKING REPORT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            for code, data in INVITE_TRACKING.items():
+                nickname_display = data.get("nickname", f"Invite-{code[:8]}")
+                report += f"**{nickname_display}** (`{code}`)\n"
+                report += f"• Total Joins: **{data.get('total_joins', 0)}**\n"
+                report += f"• Total Left: **{data.get('total_left', 0)}**\n"
+                report += f"• Current Members: **{data.get('current_members', 0)}**\n"
+                report += f"• Creator: <@{data.get('creator_id', 0)}>\n\n"
+            
+            # Split message if too long
+            if len(report) > 2000:
+                chunks = [report[i:i+2000] for i in range(0, len(report), 2000)]
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        await interaction.followup.send(chunk, ephemeral=True)
+                    else:
+                        await interaction.followup.send(chunk, ephemeral=True)
+            else:
+                await interaction.followup.send(report, ephemeral=True)
+                
+        elif action.lower() == "nickname":
+            # Set nickname for an invite
+            if not invite_code or not nickname:
+                await interaction.followup.send("❌ Both invite_code and nickname are required for this action.", ephemeral=True)
+                return
+            
+            # Check if invite exists in tracking
+            if invite_code not in INVITE_TRACKING:
+                # Initialize tracking for this invite
+                try:
+                    # Try to fetch the invite to get creator info
+                    invite = await interaction.guild.fetch_invite(invite_code)
+                    INVITE_TRACKING[invite_code] = {
+                        "nickname": nickname,
+                        "total_joins": 0,
+                        "total_left": 0,
+                        "current_members": 0,
+                        "creator_id": invite.inviter.id if invite.inviter else 0,
+                        "guild_id": interaction.guild.id,
+                        "created_at": datetime.now(AMSTERDAM_TZ).isoformat(),
+                        "last_updated": datetime.now(AMSTERDAM_TZ).isoformat()
+                    }
+                except discord.NotFound:
+                    await interaction.followup.send(f"❌ Invite code `{invite_code}` not found or expired.", ephemeral=True)
+                    return
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Error fetching invite: {str(e)}", ephemeral=True)
+                    return
+            else:
+                # Update existing nickname
+                INVITE_TRACKING[invite_code]["nickname"] = nickname
+            
+            # Save to database
+            await bot.save_invite_tracking()
+            
+            await interaction.followup.send(f"✅ Invite `{invite_code}` nickname set to: **{nickname}**", ephemeral=True)
+            
+        elif action.lower() == "stats":
+            # Show overall statistics
+            if not INVITE_TRACKING:
+                await interaction.followup.send("📊 No invite statistics available.", ephemeral=True)
+                return
+            
+            total_joins = sum(data.get("total_joins", 0) for data in INVITE_TRACKING.values())
+            total_left = sum(data.get("total_left", 0) for data in INVITE_TRACKING.values())
+            current_members = sum(data.get("current_members", 0) for data in INVITE_TRACKING.values())
+            total_invites = len(INVITE_TRACKING)
+            
+            retention_rate = ((current_members / total_joins) * 100) if total_joins > 0 else 0
+            
+            stats_report = f"📊 **INVITE STATISTICS OVERVIEW**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            stats_report += f"**Overall Performance:**\n"
+            stats_report += f"• Total Tracked Invites: **{total_invites}**\n"
+            stats_report += f"• Total Members Joined: **{total_joins}**\n"
+            stats_report += f"• Total Members Left: **{total_left}**\n"
+            stats_report += f"• Current Active Members: **{current_members}**\n"
+            stats_report += f"• Retention Rate: **{retention_rate:.1f}%**\n\n"
+            
+            # Top performers
+            if INVITE_TRACKING:
+                sorted_invites = sorted(INVITE_TRACKING.items(), key=lambda x: x[1].get("total_joins", 0), reverse=True)
+                stats_report += f"**Top Performing Invites:**\n"
+                for i, (code, data) in enumerate(sorted_invites[:5]):
+                    nickname_display = data.get("nickname", f"Invite-{code[:8]}")
+                    stats_report += f"{i+1}. **{nickname_display}**: {data.get('total_joins', 0)} joins\n"
+            
+            await interaction.followup.send(stats_report, ephemeral=True)
+            
+        elif action.lower() == "reset" and invite_code != "confirm":
+            # Reset all invite tracking (with confirmation)
+            await interaction.followup.send(
+                f"⚠️ **WARNING**: This will reset ALL invite tracking data!\n"
+                f"Currently tracking {len(INVITE_TRACKING)} invites.\n"
+                f"Use `/invitetracking reset confirm` to proceed.",
+                ephemeral=True
+            )
+            
+        elif action.lower() == "reset" and invite_code == "confirm":
+            # Actually reset the data
+            INVITE_TRACKING.clear()
+            if bot.db_pool:
+                async with bot.db_pool.acquire() as conn:
+                    await conn.execute('DELETE FROM invite_tracking')
+                    await conn.execute('DELETE FROM member_joins')
+            
+            await interaction.followup.send("✅ All invite tracking data has been reset.", ephemeral=True)
+            
+        else:
+            await interaction.followup.send(
+                f"❌ Invalid action. Use: `list`, `nickname`, `stats`, or `reset`",
+                ephemeral=True
+            )
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error with invite tracking: {str(e)}", ephemeral=True)
 
 
 # Web server for health checks
