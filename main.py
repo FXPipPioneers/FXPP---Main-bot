@@ -143,7 +143,7 @@ PRICE_TRACKING_CONFIG = {
         "fmp": "https://financialmodelingprep.com/api/v3/quote"
     },
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 300,  # seconds between price checks (5 minutes)
+    "check_interval": 225,  # seconds between price checks (3 minutes 45 seconds)
     "api_rotation_index": 0  # for rotating through APIs efficiently
 }
 
@@ -2366,6 +2366,7 @@ class TradingBot(commands.Bot):
                         f"❌ Error processing Monday activation for member {member_id}: {str(e)}"
                     )
 
+    @tasks.loop(minutes=30)  # Check every hour for follow-up DM sending
     async def followup_dm_task(self):
         """Background task to send follow-up DMs after 3, 7, and 14 days"""
         if not AUTO_ROLE_CONFIG["dm_schedule"]:
@@ -4629,7 +4630,7 @@ async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool)
             value=f"• **Monitoring**: Signals containing '{PRICE_TRACKING_CONFIG['signal_keyword']}'\n"
                   f"• **From**: Owner and bot messages only\n"
                   f"• **Excluding**: Channel ID {PRICE_TRACKING_CONFIG['excluded_channel_id']}\n"
-                  f"• **Check Interval**: {PRICE_TRACKING_CONFIG['check_interval']} seconds",
+                  f"• **Check Interval**: {PRICE_TRACKING_CONFIG['check_interval']} seconds (3m 45s)",
             inline=False
         )
     
@@ -4834,9 +4835,9 @@ async def anti_abuse_command(interaction: discord.Interaction, action: str, user
             stats_report += f"• **Blocked (rapid joins)**: {blocked_rapid_joins}\n"
             stats_report += f"• **Manual blocks**: {manual_blocks}\n"
             stats_report += f"• **Normal completions**: {total_history - blocked_new_accounts - blocked_rapid_joins - manual_blocks}\n\n"
-            stats_report += f"**🛡️ System Status**: Active\n"
-            stats_report += f"**📅 Min Account Age**: 7 days\n"
-            stats_report += f"**⏱️ Max Joins/Hour**: 5"
+            stats_report += f"**🛡️ System Status**: Manual blocking only\n"
+            stats_report += f"**📅 Min Account Age**: DISABLED (influencer collabs enabled)\n"
+            stats_report += f"**⏱️ Max Joins/Hour**: UNLIMITED (influencer collabs enabled)"
             
             await interaction.followup.send(stats_report, ephemeral=True)
             
@@ -4885,7 +4886,7 @@ async def web_server():
             "database_status": database_status,
             "database_details": database_details,
             "uptime": str(datetime.now()),
-            "version": "2.1",
+            "version": "2.2 - Optimized API & Random Messages",
             "last_heartbeat": str(bot.last_heartbeat) if hasattr(bot, 'last_heartbeat') and bot.last_heartbeat else "N/A",
             "bot_latency": f"{round(bot.latency * 1000)}ms" if bot.is_ready() else "N/A",
             "is_ready": bot.is_ready(),
