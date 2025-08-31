@@ -974,6 +974,10 @@ class TradingBot(commands.Bot):
         # Start the Monday activation notification task
         if not self.weekend_activation_task.is_running():
             self.weekend_activation_task.start()
+            
+        # Start the Monday activation task for weekend joiners
+        if not self.monday_activation_task.is_running():
+            self.monday_activation_task.start()
 
         # Start the follow-up DM task
         if not self.followup_dm_task.is_running():
@@ -1628,7 +1632,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and pair_clean in data["rates"]:
@@ -1646,7 +1650,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
@@ -1666,7 +1670,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "Realtime Currency Exchange Rate" in data:
@@ -1685,7 +1689,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
@@ -1717,7 +1721,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and pair_clean in data["rates"]:
@@ -1742,7 +1746,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
@@ -1769,7 +1773,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "Realtime Currency Exchange Rate" in data:
@@ -1795,7 +1799,7 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=10) as response:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
@@ -2359,7 +2363,23 @@ class TradingBot(commands.Bot):
 
             for member_id in pending_members:
                 try:
-                    await self.send_monday_activation_dm(member_id)
+                    data = AUTO_ROLE_CONFIG["weekend_pending"][member_id]
+                    guild = self.get_guild(data["guild_id"])
+                    if guild:
+                        member = guild.get_member(int(member_id))
+                        if member:
+                            activation_message = (
+                                "Hey! The weekend is over, so the trading markets have been opened again. "
+                                "That means your 24-hour welcome gift has officially started. "
+                                "You now have full access to the premium channel. "
+                                "Let's make the most of it by securing some wins together!"
+                            )
+                            await member.send(activation_message)
+                            print(f"✅ Sent Monday activation DM to {member.display_name}")
+                            
+                            # Mark as processed and remove from weekend_pending
+                            del AUTO_ROLE_CONFIG["weekend_pending"][member_id]
+                            await self.save_auto_role_config()
                 except Exception as e:
                     await self.log_to_discord(
                         f"❌ Error processing Monday activation for member {member_id}: {str(e)}"
@@ -2483,7 +2503,7 @@ class TradingBot(commands.Bot):
             await self.save_auto_role_config()
 
     @tasks.loop(minutes=1)  # Check every minute for real-time DM sending
-    async def followup_dm_task(self):
+    async def monday_activation_task(self):
         """Background task to send Monday activation DMs for weekend joiners"""
         if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG[
                 "active_members"]:
