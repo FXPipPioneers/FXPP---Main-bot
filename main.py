@@ -1007,7 +1007,6 @@ class TradingBot(commands.Bot):
                 await self.log_to_discord(
                     f"❌ Error caching invites for {guild.name}: {e}")
 
-        await self.log_to_discord("⚠️ Telegram integration not configured")
         
         # Check for offline members who joined while bot was offline
         await self.recover_offline_members()
@@ -1731,7 +1730,7 @@ class TradingBot(commands.Bot):
                             await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid or expired")
         except Exception as e:
             api_errors["fxapi"] = str(e)
-            print(f"FXApi failed for {pair}: {e}")
+            print(f"FXApi failed for {pair_clean}: {e}")
         
         # Try Twelve Data API
         try:
@@ -1756,7 +1755,7 @@ class TradingBot(commands.Bot):
                             await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - upgrade for higher limits")
         except Exception as e:
             api_errors["twelve_data"] = str(e)
-            print(f"Twelve Data API failed for {pair}: {e}")
+            print(f"Twelve Data API failed for {pair_clean}: {e}")
         
         # Try Alpha Vantage API
         try:
@@ -1785,7 +1784,7 @@ class TradingBot(commands.Bot):
                             await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
         except Exception as e:
             api_errors["alpha_vantage"] = str(e)
-            print(f"Alpha Vantage API failed for {pair}: {e}")
+            print(f"Alpha Vantage API failed for {pair_clean}: {e}")
         
         # Try Financial Modeling Prep API
         try:
@@ -1810,10 +1809,10 @@ class TradingBot(commands.Bot):
                             await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded - upgrade plan needed")
         except Exception as e:
             api_errors["fmp"] = str(e)
-            print(f"FMP API failed for {pair}: {e}")
+            print(f"FMP API failed for {pair_clean}: {e}")
         
         # Verify price accuracy using multiple sources
-        return await self.verify_price_accuracy(pair, prices, api_errors)
+        return await self.verify_price_accuracy(pair_clean, prices, api_errors)
     
     async def verify_price_accuracy(self, pair: str, prices: Dict[str, float], api_errors: Dict[str, str]) -> Optional[float]:
         """Verify price accuracy by cross-checking multiple API sources"""
