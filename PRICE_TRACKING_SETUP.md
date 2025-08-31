@@ -5,29 +5,63 @@ The Discord Trading Bot now includes a comprehensive live price tracking system 
 
 ## Required API Keys
 
-### 1. FXApi (Primary - Recommended)
+### 1. FXApi (Primary - Recommended) ⭐
 - **Website**: https://fxapi.com/
 - **Free Tier**: 1,000 requests/month
 - **Environment Variable**: `FXAPI_KEY`
 - **Coverage**: 170+ currencies, real-time forex data
 
-### 2. Twelve Data (Secondary)
+**Registration Steps:**
+1. Go to https://fxapi.com/
+2. Click "Get Free API Key" or "Sign Up"
+3. Create account with email and password
+4. Verify your email address
+5. Go to Dashboard → API Keys
+6. Copy your API key (starts with "fxapi_live_...")
+7. Add to Render environment variables as `FXAPI_KEY`
+
+### 2. Twelve Data (Secondary) 🥈
 - **Website**: https://twelvedata.com/
 - **Free Tier**: 800 requests/day
 - **Environment Variable**: `TWELVE_DATA_KEY`
 - **Coverage**: Forex, stocks, crypto, commodities
 
-### 3. Alpha Vantage (Backup)
+**Registration Steps:**
+1. Go to https://twelvedata.com/
+2. Click "Get Free API Key" 
+3. Fill out registration form (name, email, company)
+4. Verify email and login
+5. Navigate to Dashboard → API Keys
+6. Copy your API key (32-character string)
+7. Add to Render environment variables as `TWELVE_DATA_KEY`
+
+### 3. Alpha Vantage (Backup) 🥉
 - **Website**: https://www.alphavantage.co/
 - **Free Tier**: 500 requests/day
 - **Environment Variable**: `ALPHA_VANTAGE_KEY`
 - **Coverage**: Forex, stocks, crypto
 
-### 4. Financial Modeling Prep (Final Fallback)
+**Registration Steps:**
+1. Go to https://www.alphavantage.co/support/#api-key
+2. Fill out form: Name, Email, Organization
+3. Check email for API key (usually instant)
+4. API key format: 16-character alphanumeric
+5. Add to Render environment variables as `ALPHA_VANTAGE_KEY`
+
+### 4. Financial Modeling Prep (Final Fallback) 🔄
 - **Website**: https://financialmodelingprep.com/
 - **Free Tier**: 250 requests/day
 - **Environment Variable**: `FMP_KEY`
 - **Coverage**: Stocks, forex, commodities
+
+**Registration Steps:**
+1. Go to https://financialmodelingprep.com/developer/docs
+2. Click "Get Free API Key"
+3. Create account with email/password
+4. Verify email address
+5. Go to Dashboard → API Key section
+6. Copy your API key (32-character string)
+7. Add to Render environment variables as `FMP_KEY`
 
 ## Setup Instructions for Render.com
 

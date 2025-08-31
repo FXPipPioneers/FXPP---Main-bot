@@ -40,17 +40,7 @@ except ImportError:
     PYTZ_AVAILABLE = False
     print("⚠️ Pytz not available - Using basic timezone handling")
 
-# Telegram integration
-try:
-    from pyrogram.client import Client
-    from pyrogram import filters
-    from pyrogram.types import Message
-    TELEGRAM_AVAILABLE = True
-    print("Pyrogram loaded - Telegram integration enabled")
-except ImportError:
-    TELEGRAM_AVAILABLE = False
-    print(
-        "Pyrogram not available - Install with: pip install pyrogram tgcrypto")
+# Telegram integration removed as per user request
 
 # Price tracking APIs
 import requests
@@ -153,7 +143,8 @@ PRICE_TRACKING_CONFIG = {
         "fmp": "https://financialmodelingprep.com/api/v3/quote"
     },
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 30  # seconds between price checks
+    "check_interval": 300,  # seconds between price checks (5 minutes)
+    "api_rotation_index": 0  # for rotating through APIs efficiently
 }
 
 # Level system configuration
@@ -474,9 +465,122 @@ class TradingBot(commands.Bot):
             await self.log_to_discord(f"❌ Error during offline DM recovery: {str(e)}")
             print(f"Offline DM recovery error: {e}")
 
-    @tasks.loop(seconds=30)
+    async def recover_missed_signals(self):
+        """Check for trading signals that were sent while bot was offline"""
+        if not PRICE_TRACKING_CONFIG["enabled"]:
+            return
+            
+        try:
+            await self.log_to_discord("🔍 Scanning for missed trading signals while offline...")
+            
+            # Get the last known online time  
+            offline_check_time = self.last_online_time
+            if not offline_check_time:
+                # If we don't know when we were last online, check last 6 hours as safety measure
+                offline_check_time = datetime.now(AMSTERDAM_TZ) - timedelta(hours=6)
+            
+            recovered_signals = 0
+            
+            for guild in self.guilds:
+                if not guild:
+                    continue
+                
+                for channel in guild.text_channels:
+                    # Skip excluded channel
+                    if str(channel.id) == PRICE_TRACKING_CONFIG["excluded_channel_id"]:
+                        continue
+                        
+                    try:
+                        # Check messages sent while bot was offline
+                        async for message in channel.history(after=offline_check_time, limit=100):
+                            # Only process signals from owner or bot
+                            if not (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot):
+                                continue
+                                
+                            # Check if message contains trading signal
+                            if PRICE_TRACKING_CONFIG["signal_keyword"] not in message.content:
+                                continue
+                            
+                            # Skip if already being tracked
+                            if str(message.id) in PRICE_TRACKING_CONFIG["active_trades"]:
+                                continue
+                            
+                            # Parse the signal
+                            trade_data = self.parse_signal_message(message.content)
+                            if not trade_data:
+                                continue
+                            
+                            # Get historical price at the time the message was sent
+                            message_time = message.created_at.astimezone(AMSTERDAM_TZ)
+                            historical_price = await self.get_historical_price(trade_data["pair"], message_time)
+                            
+                            if historical_price:
+                                # Calculate tracking levels based on historical price
+                                live_levels = self.calculate_live_tracking_levels(
+                                    historical_price, trade_data["pair"], trade_data["action"]
+                                )
+                                
+                                # Store both Discord and historical prices
+                                trade_data["discord_entry"] = trade_data["entry"]
+                                trade_data["discord_tp1"] = trade_data["tp1"]
+                                trade_data["discord_tp2"] = trade_data["tp2"] 
+                                trade_data["discord_tp3"] = trade_data["tp3"]
+                                trade_data["discord_sl"] = trade_data["sl"]
+                                
+                                # Override with historical-price-based levels
+                                trade_data["live_entry"] = historical_price
+                                trade_data["entry"] = live_levels["entry"]
+                                trade_data["tp1"] = live_levels["tp1"]
+                                trade_data["tp2"] = live_levels["tp2"]
+                                trade_data["tp3"] = live_levels["tp3"]
+                                trade_data["sl"] = live_levels["sl"]
+                                
+                                # Add metadata
+                                trade_data["channel_id"] = channel.id
+                                trade_data["message_id"] = str(message.id)
+                                trade_data["timestamp"] = message.created_at.isoformat()
+                                trade_data["recovered"] = True  # Mark as recovered signal
+                                
+                                # Add to active tracking
+                                PRICE_TRACKING_CONFIG["active_trades"][str(message.id)] = trade_data
+                                recovered_signals += 1
+                                
+                                print(f"✅ Recovered signal: {trade_data['pair']} from {message_time.strftime('%Y-%m-%d %H:%M')}")
+                            else:
+                                print(f"⚠️ Could not get historical price for {trade_data['pair']} - skipping recovery")
+                                
+                    except Exception as e:
+                        print(f"❌ Error scanning {channel.name} for missed signals: {e}")
+                        continue
+            
+            if recovered_signals > 0:
+                await self.log_to_discord(f"🔄 **Signal Recovery Complete**\n"
+                                          f"Found and started tracking {recovered_signals} missed trading signals")
+            else:
+                await self.log_to_discord("✅ No missed trading signals found during downtime")
+                
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error during missed signal recovery: {str(e)}")
+            print(f"Missed signal recovery error: {e}")
+
+    async def get_historical_price(self, pair: str, timestamp: datetime) -> Optional[float]:
+        """Get historical price for a trading pair at a specific timestamp"""
+        try:
+            # For now, use current price as fallback (historical prices require different APIs)
+            # This could be enhanced with time-series APIs in the future
+            current_price = await self.get_live_price(pair)
+            if current_price:
+                print(f"⚠️ Using current price for historical lookup: {pair} at {timestamp.strftime('%Y-%m-%d %H:%M')}")
+                return current_price
+            return None
+        except Exception as e:
+            print(f"Error getting historical price for {pair}: {e}")
+            return None
+
+
+    @tasks.loop(seconds=225)  # Check every 3 minutes 45 seconds (3 min + 45s safety buffer) for optimal API usage
     async def price_tracking_task(self):
-        """Background task to monitor live prices for active trades"""
+        """Background task to monitor live prices for active trades - optimized for free API tiers"""
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return
         
@@ -782,11 +886,59 @@ class TradingBot(commands.Bot):
         # Initialize invite cache for bot invite detection
         self._cached_invites = {}
 
+        # Backtrack existing server invites for tracking
+        await self.backtrack_existing_invites()
+
         # Force sync after bot is ready for better reliability
         self.first_sync_done = False
 
         # Initialize database
         await self.init_database()
+
+    async def backtrack_existing_invites(self):
+        """Backtrack and start monitoring all existing server invites"""
+        try:
+            backtracked_count = 0
+            
+            for guild in self.guilds:
+                try:
+                    # Fetch all current invites for this guild
+                    current_invites = await guild.invites()
+                    
+                    # Cache invites for this guild
+                    self._cached_invites[guild.id] = current_invites
+                    
+                    # Add any uncached invites to tracking system
+                    for invite in current_invites:
+                        if invite.code not in INVITE_TRACKING:
+                            # Initialize tracking for this existing invite
+                            INVITE_TRACKING[invite.code] = {
+                                "nickname": f"Pre-existing-{invite.code[:8]}",
+                                "creator_id": invite.inviter.id if invite.inviter else 0,
+                                "total_joins": invite.uses or 0,  # Start with current usage
+                                "total_left": 0,  # Can't backtrack left members
+                                "current_members": invite.uses or 0,  # Assume all are still here
+                                "guild_id": guild.id,
+                                "created_at": invite.created_at.isoformat() if invite.created_at else None,
+                                "max_uses": invite.max_uses,
+                                "temporary": invite.temporary,
+                                "backtracked": True  # Mark as backtracked
+                            }
+                            backtracked_count += 1
+                            
+                except Exception as e:
+                    print(f"❌ Error backtracking invites for guild {guild.name}: {e}")
+                    continue
+            
+            if backtracked_count > 0:
+                print(f"✅ Backtracked {backtracked_count} existing server invites for monitoring")
+                await self.log_to_discord(f"🔄 **Invite Backtracking Complete**\n"
+                                          f"Started monitoring {backtracked_count} existing server invites")
+            else:
+                print("📋 No new invites found to backtrack")
+                
+        except Exception as e:
+            print(f"❌ Error during invite backtracking: {e}")
 
     async def on_ready(self):
         print("🎉 DISCORD BOT READY EVENT TRIGGERED!")
@@ -862,6 +1014,9 @@ class TradingBot(commands.Bot):
         
         # Check for missed DM reminders while bot was offline
         await self.recover_offline_dm_reminders()
+        
+        # Check for missed trading signals while bot was offline
+        await self.recover_missed_signals()
         
         # Update bot status and start heartbeat
         if self.db_pool:
@@ -1041,13 +1196,19 @@ class TradingBot(commands.Bot):
                     f"❌ Auto-role not found in guild {member.guild.name}")
                 return
 
-            # Check if user has already received the role before (anti-abuse system)
+            # Enhanced anti-abuse system checks
             member_id_str = str(member.id)
+            
+            # Check if user has already received the role before
             if member_id_str in AUTO_ROLE_CONFIG["role_history"]:
                 await self.log_to_discord(
                     f"🚫 {member.display_name} has already received auto-role before - access denied (anti-abuse)"
                 )
                 return
+            
+            # Account age check removed - allow new Discord users to join from influencer collabs
+            
+            # Rapid join pattern detection removed - allow unlimited joins during influencer collabs
 
             join_time = datetime.now(AMSTERDAM_TZ)
 
@@ -1173,6 +1334,35 @@ class TradingBot(commands.Bot):
                 # Parse the signal message
                 trade_data = self.parse_signal_message(message.content)
                 if trade_data:
+                    # Get live price at the moment of signal using all APIs for accuracy
+                    live_price = await self.get_live_price(trade_data["pair"], use_all_apis=True)
+                    
+                    if live_price:
+                        # Calculate live-price-based TP/SL levels for tracking
+                        live_levels = self.calculate_live_tracking_levels(
+                            live_price, trade_data["pair"], trade_data["action"]
+                        )
+                        
+                        # Store both Discord prices (for reference) and live prices (for tracking)
+                        trade_data["discord_entry"] = trade_data["entry"]
+                        trade_data["discord_tp1"] = trade_data["tp1"] 
+                        trade_data["discord_tp2"] = trade_data["tp2"]
+                        trade_data["discord_tp3"] = trade_data["tp3"]
+                        trade_data["discord_sl"] = trade_data["sl"]
+                        
+                        # Override with live-price-based levels for tracking
+                        trade_data["live_entry"] = live_price
+                        trade_data["entry"] = live_levels["entry"]
+                        trade_data["tp1"] = live_levels["tp1"]
+                        trade_data["tp2"] = live_levels["tp2"] 
+                        trade_data["tp3"] = live_levels["tp3"]
+                        trade_data["sl"] = live_levels["sl"]
+                        
+                        print(f"✅ Signal tracking: Discord entry ${trade_data['discord_entry']}, Live entry ${live_price}")
+                        print(f"   Tracking TP/SL based on live price: TP1=${trade_data['tp1']}, SL=${trade_data['sl']}")
+                    else:
+                        print(f"⚠️ Could not get live price for {trade_data['pair']}, using Discord prices for tracking")
+                    
                     # Add channel and message info
                     trade_data["channel_id"] = message.channel.id
                     trade_data["message_id"] = str(message.id)
@@ -1390,13 +1580,133 @@ class TradingBot(commands.Bot):
 
     # ===== LIVE PRICE TRACKING METHODS =====
     
-    async def get_live_price(self, pair: str) -> Optional[float]:
-        """Get live price for a trading pair using multiple API fallbacks"""
+    async def get_live_price(self, pair: str, use_all_apis: bool = False) -> Optional[float]:
+        """Get live price with smart API rotation to conserve free tier limits"""
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return None
             
         # Normalize pair format for different APIs
         pair_clean = pair.replace("/", "").upper()
+        
+        # For regular monitoring, use only 1-2 APIs to conserve limits
+        # For initial signal verification, use all APIs for maximum accuracy
+        if use_all_apis:
+            return await self.get_verified_price_all_apis(pair_clean)
+        else:
+            return await self.get_price_optimized_rotation(pair_clean)
+    
+    async def get_price_optimized_rotation(self, pair_clean: str) -> Optional[float]:
+        """Get price using smart API rotation to minimize free tier usage"""
+        # Define API priority order (most reliable first)
+        api_order = ["twelve_data", "fxapi", "alpha_vantage", "fmp"]
+        
+        # Rotate through APIs to distribute load
+        start_index = PRICE_TRACKING_CONFIG["api_rotation_index"] % len(api_order)
+        
+        # Try 2 APIs max per check (primary + backup)
+        for i in range(2):
+            api_index = (start_index + i) % len(api_order)
+            api_name = api_order[api_index]
+            
+            price = await self.get_price_from_single_api(api_name, pair_clean)
+            if price is not None:
+                # Update rotation for next check
+                PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
+                print(f"✅ Price from {api_name} for {pair_clean}: ${price:.5f}")
+                return price
+        
+        print(f"⚠️ Primary APIs failed for {pair_clean}, trying all APIs as fallback")
+        return await self.get_verified_price_all_apis(pair_clean)
+    
+    async def get_price_from_single_api(self, api_name: str, pair_clean: str) -> Optional[float]:
+        """Get price from a specific API"""
+        try:
+            if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
+                params = {
+                    "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
+                    "symbols": pair_clean
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and pair_clean in data["rates"]:
+                                return float(data["rates"][pair_clean])
+                        elif response.status == 429:
+                            await self.log_api_limit_warning("FXApi", "Rate limit exceeded - switching to backup API")
+                        elif response.status == 403:
+                            await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid")
+            
+            elif api_name == "twelve_data" and PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
+                params = {
+                    "symbol": pair_clean,
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "price" in data:
+                                return float(data["price"])
+                            elif "message" in data and "limit" in data["message"].lower():
+                                await self.log_api_limit_warning("Twelve Data", f"Usage limit: {data['message']}")
+                        elif response.status == 429:
+                            await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - switching to backup")
+            
+            elif api_name == "alpha_vantage" and PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
+                params = {
+                    "function": "CURRENCY_EXCHANGE_RATE",
+                    "from_currency": pair_clean[:3],
+                    "to_currency": pair_clean[3:],
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "Realtime Currency Exchange Rate" in data:
+                                rate_data = data["Realtime Currency Exchange Rate"]
+                                if "5. Exchange Rate" in rate_data:
+                                    return float(rate_data["5. Exchange Rate"])
+                            elif "Note" in data and "call frequency" in data["Note"]:
+                                await self.log_api_limit_warning("Alpha Vantage", "Daily limit reached - switching to backup")
+                        elif response.status == 429:
+                            await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
+            
+            elif api_name == "fmp" and PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{pair_clean}"
+                params = {
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=10) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
+                                return float(data[0]["price"])
+                            elif isinstance(data, dict) and "Error Message" in data:
+                                if "limit" in data["Error Message"].lower():
+                                    await self.log_api_limit_warning("Financial Modeling Prep", f"Usage limit: {data['Error Message']}")
+                        elif response.status == 429:
+                            await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded")
+        
+        except Exception as e:
+            print(f"{api_name} failed for {pair_clean}: {e}")
+        
+        return None
+    
+    async def get_verified_price_all_apis(self, pair_clean: str) -> Optional[float]:
+        """Get price from all APIs for maximum accuracy verification (used sparingly)"""
+        # Collect prices from multiple APIs for cross-verification
+        prices = {}
+        api_errors = {}
         
         # Try FXApi first
         try:
@@ -1412,8 +1722,15 @@ class TradingBot(commands.Bot):
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and pair_clean in data["rates"]:
-                                return float(data["rates"][pair_clean])
+                                prices["fxapi"] = float(data["rates"][pair_clean])
+                        elif response.status == 429:
+                            api_errors["fxapi"] = "rate_limit"
+                            await self.log_api_limit_warning("FXApi", "Rate limit exceeded - consider upgrading plan")
+                        elif response.status == 403:
+                            api_errors["fxapi"] = "access_denied"
+                            await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid or expired")
         except Exception as e:
+            api_errors["fxapi"] = str(e)
             print(f"FXApi failed for {pair}: {e}")
         
         # Try Twelve Data API
@@ -1430,8 +1747,15 @@ class TradingBot(commands.Bot):
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
-                                return float(data["price"])
+                                prices["twelve_data"] = float(data["price"])
+                            elif "message" in data and "limit" in data["message"].lower():
+                                api_errors["twelve_data"] = "usage_limit"
+                                await self.log_api_limit_warning("Twelve Data", f"Usage limit reached: {data['message']}")
+                        elif response.status == 429:
+                            api_errors["twelve_data"] = "rate_limit"
+                            await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - upgrade for higher limits")
         except Exception as e:
+            api_errors["twelve_data"] = str(e)
             print(f"Twelve Data API failed for {pair}: {e}")
         
         # Try Alpha Vantage API
@@ -1452,8 +1776,15 @@ class TradingBot(commands.Bot):
                             if "Realtime Currency Exchange Rate" in data:
                                 rate_data = data["Realtime Currency Exchange Rate"]
                                 if "5. Exchange Rate" in rate_data:
-                                    return float(rate_data["5. Exchange Rate"])
+                                    prices["alpha_vantage"] = float(rate_data["5. Exchange Rate"])
+                            elif "Note" in data and "call frequency" in data["Note"]:
+                                api_errors["alpha_vantage"] = "frequency_limit"
+                                await self.log_api_limit_warning("Alpha Vantage", "Daily API limit reached - upgrade for unlimited calls")
+                        elif response.status == 429:
+                            api_errors["alpha_vantage"] = "rate_limit"
+                            await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
         except Exception as e:
+            api_errors["alpha_vantage"] = str(e)
             print(f"Alpha Vantage API failed for {pair}: {e}")
         
         # Try Financial Modeling Prep API
@@ -1469,12 +1800,79 @@ class TradingBot(commands.Bot):
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
-                                return float(data[0]["price"])
+                                prices["fmp"] = float(data[0]["price"])
+                            elif isinstance(data, dict) and "Error Message" in data:
+                                if "limit" in data["Error Message"].lower():
+                                    api_errors["fmp"] = "usage_limit"
+                                    await self.log_api_limit_warning("Financial Modeling Prep", f"Usage limit: {data['Error Message']}")
+                        elif response.status == 429:
+                            api_errors["fmp"] = "rate_limit"
+                            await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded - upgrade plan needed")
         except Exception as e:
+            api_errors["fmp"] = str(e)
             print(f"FMP API failed for {pair}: {e}")
         
-        print(f"All APIs failed for {pair}")
-        return None
+        # Verify price accuracy using multiple sources
+        return await self.verify_price_accuracy(pair, prices, api_errors)
+    
+    async def verify_price_accuracy(self, pair: str, prices: Dict[str, float], api_errors: Dict[str, str]) -> Optional[float]:
+        """Verify price accuracy by cross-checking multiple API sources"""
+        if not prices:
+            print(f"❌ No valid prices obtained for {pair} - all APIs failed")
+            if api_errors:
+                error_summary = ", ".join([f"{api}: {error}" for api, error in api_errors.items()])
+                print(f"   API Errors: {error_summary}")
+            return None
+        
+        if len(prices) == 1:
+            # Only one source - use it but log warning
+            api_name, price = next(iter(prices.items()))
+            print(f"⚠️ Only {api_name} provided price for {pair}: ${price}")
+            return price
+        
+        # Multiple sources - verify consistency
+        price_values = list(prices.values())
+        avg_price = sum(price_values) / len(price_values)
+        
+        # Check if all prices are within 0.1% of average (very tight tolerance)
+        tolerance = 0.001  # 0.1%
+        consistent_prices = []
+        
+        for api_name, price in prices.items():
+            deviation = abs(price - avg_price) / avg_price
+            if deviation <= tolerance:
+                consistent_prices.append((api_name, price))
+            else:
+                print(f"⚠️ {api_name} price for {pair} deviates significantly: ${price} (avg: ${avg_price:.5f})")
+        
+        if len(consistent_prices) >= 2:
+            # Use average of consistent prices
+            final_price = sum([price for _, price in consistent_prices]) / len(consistent_prices)
+            api_names = ", ".join([api for api, _ in consistent_prices])
+            print(f"✅ Price verified for {pair}: ${final_price:.5f} (sources: {api_names})")
+            return final_price
+        elif len(prices) >= 2:
+            # Use median if we have multiple sources but they're not very consistent
+            sorted_prices = sorted(price_values)
+            median_price = sorted_prices[len(sorted_prices)//2]
+            print(f"⚠️ Using median price for {pair}: ${median_price:.5f} (prices varied across sources)")
+            return median_price
+        else:
+            # Fallback to single source
+            api_name, price = next(iter(prices.items()))
+            return price
+    
+    async def log_api_limit_warning(self, api_name: str, message: str):
+        """Log API limit warnings to Discord and console"""
+        warning_msg = f"🚨 **{api_name} API Limit Warning**\n{message}\n\n" + \
+                     f"**Action Required:**\n" + \
+                     f"• Check your {api_name} dashboard for usage details\n" + \
+                     f"• Consider upgrading your plan for higher limits\n" + \
+                     f"• Bot will continue using other API sources\n\n" + \
+                     f"**Impact:** Price tracking accuracy may be reduced if multiple APIs are limited."
+        
+        await self.log_to_discord(warning_msg)
+        print(f"API LIMIT WARNING: {api_name} - {message}")
 
     def parse_signal_message(self, content: str) -> Optional[Dict]:
         """Parse a trading signal message to extract trade data"""
@@ -1653,14 +2051,62 @@ class TradingBot(commands.Bot):
             print(f"Error handling breakeven hit: {e}")
 
     async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str):
-        """Send TP hit notification"""
+        """Send TP hit notification with random message selection"""
+        import random
+        
         try:
-            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
-            tp_number = tp_level.upper()
-            notification = f"@everyone **{tp_number} HAS BEEN HIT!** 🎯"
+            # Random messages for each TP level
+            tp1_messages = [
+                "@everyone TP1 has been hit. First target secured, let's keep it going. Next stop: TP2 📈🔥",
+                "@everyone TP1 smashed. Secure some profits if you'd like and let's aim for TP2 🎯💪",
+                "@everyone We've just hit TP1. Nice start. The current momentum is looking good for TP2 🚀📊",
+                "@everyone TP1 has been hit! Keep your eyes on the next level. TP2 up next 👀💸",
+                "@everyone First milestone hit. The trade is off to a clean start 📉➡️📈",
+                "@everyone TP1 has been reached. Let's keep the discipline and push for TP2 💼🔁",
+                "@everyone First TP level hit! TP1 is in. Stay focused as we aim for TP2 & TP3! 💹🚀",
+                "@everyone TP1 locked in. Let's keep monitoring price action and go for TP2 💰📍",
+                "@everyone TP1 has been reached. Trade is moving as planned. Next stop: TP2 🔄📊",
+                "@everyone TP1 hit. Great entry. now let's trail it smart toward TP2 🧠📈"
+            ]
             
-            if tp_level == "tp2":
-                notification += f"\n\n**SL moved to breakeven (entry: {trade_data['entry']})**"
+            tp2_messages = [
+                "@everyone TP1 & TP2 have both been hit :rocket::rocket: move your SL to breakeven and lets get TP3 :money_with_wings:",
+                "@everyone TP2 has been hit :rocket::rocket: move your SL to breakeven and lets get TP3 :money_with_wings:",
+                "@everyone TP2 has been hit :rocket::rocket: move your sl to breakeven, partially close the trade and lets get tp3 :dart::dart::dart:",
+                "@everyone TP2 has been hit:money_with_wings: please move your SL to breakeven, partially close the trade and lets go for TP3 :rocket:",
+                "@everyone TP2 has been hit. Move your SL to breakeven and secure those profits. Let's push for TP3. we're not done yet 🚀💰",
+                "@everyone TP2 has officially been smashed. Move SL to breakeven, partial close if you haven't already. TP3 is calling 📈🔥",
+                "@everyone TP2 just got hit. Lock in those gains by moving your SL to breakeven. TP3 is the next target so let's stay sharp and ride this momentum 💪📊",
+                "@everyone Another level cleared as TP2 has been hit. Shift SL to breakeven and lock it in. Eyes on TP3 now so let's finish strong 🧠🎯",
+                "@everyone TP2 has been hit. Move your SL to breakeven immediately. This setup is moving clean and TP3 is well within reach 🚀🔒",
+                "@everyone Great move traders, TP2 has been tagged. Time to shift SL to breakeven and secure the bag. TP3 is the final boss and we're coming for it 💼⚔️"
+            ]
+            
+            tp3_messages = [
+                "@everyone TP3 hit. Full target smashed, perfect execution 🔥🔥🔥",
+                "@everyone Huge win, TP3 reached. Congrats to everyone who followed 📊🚀",
+                "@everyone TP3 just got hit. Close it out and lock in profits 💸🎯",
+                "@everyone TP3 tagged. That wraps up the full setup — solid trade 💪💼",
+                "@everyone TP3 locked in. Flawless setup from entry to exit 🙌📈",
+                "@everyone TP3 hit. This one went exactly as expected. Great job ✅💰",
+                "@everyone TP3 has been reached. Hope you secured profits all the way through 🏁📊",
+                "@everyone TP3 reached. Strategy and patience paid off big time 🔍🚀",
+                "@everyone Final target hit. Huge win for FX Pip Pioneers 🔥💸",
+                "@everyone TP3 secured. That's the result of following the plan 💼💎"
+            ]
+            
+            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
+            
+            # Select random message based on TP level
+            if tp_level == "tp1":
+                notification = random.choice(tp1_messages)
+            elif tp_level == "tp2":
+                notification = random.choice(tp2_messages)
+            elif tp_level == "tp3":
+                notification = random.choice(tp3_messages)
+            else:
+                # Fallback to original message
+                notification = f"@everyone **{tp_level.upper()} HAS BEEN HIT!** 🎯"
             
             await message.reply(notification)
             
@@ -1668,10 +2114,25 @@ class TradingBot(commands.Bot):
             print(f"Error sending TP notification: {e}")
 
     async def send_sl_notification(self, message_id: str, trade_data: Dict):
-        """Send SL hit notification"""
+        """Send SL hit notification with random message selection"""
+        import random
+        
         try:
+            # Random messages for SL hits
+            sl_messages = [
+                "@everyone This one hit SL. It happens. Let's stay focused and get the next one 🔄🧠",
+                "@everyone SL has been hit. Risk was managed, we move on 💪📉",
+                "@everyone This setup didn't go as planned and hit SL. On to the next 📊",
+                "@everyone SL hit. It's all part of the process. Stay disciplined 💼📚",
+                "@everyone SL hit. Losses are part of trading. We bounce back 📈⏭️",
+                "@everyone SL hit. Trust the process and prepare for the next opportunity 🔄🧠",
+                "@everyone SL was hit on this one. We took the loss, now let's stay sharp 🔁💪",
+                "@everyone SL hit. It's part of the game. Let's stay focused on quality 📉🎯",
+                "@everyone This trade hit SL. Discipline keeps us in the game. We´ll get the loss back next trade💼🧘‍♂️"
+            ]
+            
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
-            notification = f"@everyone **SL HAS BEEN HIT!** ❌"
+            notification = random.choice(sl_messages)
             
             await message.reply(notification)
             
@@ -1995,13 +2456,27 @@ class TradingBot(commands.Bot):
                 await self.log_to_discord(
                     f"⚠️ Could not send {msg_data['days']}-day follow-up DM to member {msg_data['member_id']} (DMs disabled)"
                 )
-                # Mark as sent to avoid retrying
+                # Mark as sent to avoid retrying when DMs are disabled
                 AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][
                     msg_data['sent_key']] = True
             except Exception as e:
-                await self.log_to_discord(
-                    f"❌ Error sending {msg_data['days']}-day follow-up DM to member {msg_data['member_id']}: {str(e)}"
-                )
+                # For other errors, implement retry logic
+                retry_count = AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']].get(f"dm_{msg_data['days']}_retry_count", 0)
+                max_retries = 3
+                
+                if retry_count < max_retries:
+                    # Increment retry count and try again later
+                    AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][f"dm_{msg_data['days']}_retry_count"] = retry_count + 1
+                    await self.log_to_discord(
+                        f"🔄 DM retry {retry_count + 1}/{max_retries} for {msg_data['days']}-day message to member {msg_data['member_id']}: {str(e)}"
+                    )
+                else:
+                    # Max retries reached, mark as sent to stop trying
+                    AUTO_ROLE_CONFIG["dm_schedule"][msg_data['member_id']][
+                        msg_data['sent_key']] = True
+                    await self.log_to_discord(
+                        f"❌ Failed to send {msg_data['days']}-day DM to member {msg_data['member_id']} after {max_retries} retries: {str(e)}"
+                    )
 
         # Save config if any changes were made
         if messages_to_send:
@@ -2276,6 +2751,43 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
         'sl': format_price(sl),
         'entry': format_price(entry_price)
     }
+
+
+    def calculate_live_tracking_levels(self, live_price: float, pair: str, action: str):
+        """Calculate TP and SL levels based on live price for backend tracking"""
+        if pair in PAIR_CONFIG:
+            pip_value = PAIR_CONFIG[pair]['pip_value']
+        else:
+            # Default values for unknown pairs
+            pip_value = 0.0001
+        
+        # Calculate pip amounts (20, 40, 70, 50 as specified by user)
+        tp1_pips = 20 * pip_value
+        tp2_pips = 40 * pip_value  
+        tp3_pips = 70 * pip_value
+        sl_pips = 50 * pip_value
+        
+        # Determine direction based on action
+        is_buy = action.upper() == "BUY"
+        
+        if is_buy:
+            tp1 = live_price + tp1_pips
+            tp2 = live_price + tp2_pips
+            tp3 = live_price + tp3_pips
+            sl = live_price - sl_pips
+        else:  # SELL
+            tp1 = live_price - tp1_pips
+            tp2 = live_price - tp2_pips
+            tp3 = live_price - tp3_pips
+            sl = live_price + sl_pips
+        
+        return {
+            'entry': live_price,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'sl': sl
+        }
 
 
 def get_remaining_time_display(member_id: str) -> str:
@@ -3113,16 +3625,90 @@ async def database_status_command(interaction: discord.Interaction):
 
 
 # Level System Command
-@bot.tree.command(name="level", description="Check level information for yourself or another user")
+@bot.tree.command(name="level", description="Check level information for yourself or another user, or view leaderboard")
 @app_commands.describe(
-    user="User to check level for (leave empty to check your own level)"
+    user="User to check level for (leave empty to check your own level)",
+    show_leaderboard="Show server leaderboard instead of individual level"
 )
-async def level_command(interaction: discord.Interaction, user: discord.Member = None):
-    """Check level information"""
+async def level_command(interaction: discord.Interaction, user: discord.Member = None, show_leaderboard: bool = False):
+    """Check level information or display leaderboard"""
     
     if not await owner_check(interaction):
         return
     
+    # If leaderboard is requested, show top users
+    if show_leaderboard:
+        await interaction.response.defer(ephemeral=True)
+        
+        if not LEVEL_SYSTEM["user_data"]:
+            await interaction.followup.send("📊 No level data available yet. Users need to send messages to start leveling up!", ephemeral=True)
+            return
+        
+        # Get guild members and filter level data to current guild
+        guild_users = []
+        for user_id, data in LEVEL_SYSTEM["user_data"].items():
+            if data.get("guild_id") == interaction.guild.id:
+                guild_users.append((user_id, data))
+        
+        # Sort by level (descending), then by message count (descending)
+        guild_users.sort(key=lambda x: (x[1]["current_level"], x[1]["message_count"]), reverse=True)
+        
+        # Create leaderboard embed
+        embed = discord.Embed(
+            title=f"🏆 {interaction.guild.name} Level Leaderboard",
+            description="Top active community members ranked by level and messages",
+            color=discord.Color.gold()
+        )
+        
+        # Show top 10 users
+        leaderboard_text = ""
+        for i, (user_id, data) in enumerate(guild_users[:10], 1):
+            try:
+                member = interaction.guild.get_member(int(user_id))
+                if member:
+                    # Medal emojis for top 3
+                    medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"**{i}.**"
+                    level = data["current_level"]
+                    messages = data["message_count"]
+                    
+                    level_display = f"Level {level}" if level > 0 else "No Level"
+                    leaderboard_text += f"{medal} **{member.display_name}**\n"
+                    leaderboard_text += f"    └ {level_display} • {messages:,} messages\n\n"
+            except Exception as e:
+                print(f"Error processing leaderboard entry for user {user_id}: {e}")
+                continue
+        
+        if leaderboard_text:
+            embed.add_field(
+                name="📈 Top Community Members",
+                value=leaderboard_text,
+                inline=False
+            )
+            
+            # Add server stats
+            total_users = len(guild_users)
+            total_messages = sum(data["message_count"] for _, data in guild_users)
+            avg_level = sum(data["current_level"] for _, data in guild_users) / total_users if total_users > 0 else 0
+            
+            embed.add_field(
+                name="📊 Server Statistics",
+                value=f"• **Total Active Users**: {total_users:,}\n" +
+                      f"• **Total Messages**: {total_messages:,}\n" +
+                      f"• **Average Level**: {avg_level:.1f}",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📊 Leaderboard",
+                value="No active users found in this server.",
+                inline=False
+            )
+        
+        embed.set_footer(text="Use /level without leaderboard option to check your individual progress")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+    
+    # Individual level check (original functionality)
     target_user = user or interaction.user
     user_id = str(target_user.id)
     
@@ -3758,122 +4344,7 @@ async def on_reaction_add(reaction, user):
         return
 
 
-@bot.tree.command(name="stats", description="Send trading statistics summary")
-@app_commands.describe(
-    date_range="Date range for the statistics",
-    total_signals="Total number of signals sent",
-    tp1_hits="Number of TP1 hits",
-    tp2_hits="Number of TP2 hits",
-    tp3_hits="Number of TP3 hits",
-    sl_hits="Number of SL hits",
-    channels=
-    "Select channels to send the stats to (comma-separated channel mentions or names)",
-    currently_open="Number of currently open trades",
-    total_closed="Total closed trades (auto-calculated if not provided)")
-async def stats_command(interaction: discord.Interaction,
-                        date_range: str,
-                        total_signals: int,
-                        tp1_hits: int,
-                        tp2_hits: int,
-                        tp3_hits: int,
-                        sl_hits: int,
-                        channels: str,
-                        currently_open: str = "0",
-                        total_closed: int = None):
-    """Send formatted trading statistics to specified channels"""
-    
-    if not await owner_check(interaction):
-        return
-
-    try:
-        # Calculate total closed if not provided
-        if total_closed is None:
-            total_closed = tp1_hits + sl_hits
-
-        # Calculate percentages
-        def calc_percentage(hits, total):
-            if total == 0:
-                return "0%"
-            return f"{(hits/total)*100:.0f}%"
-
-        tp1_percent = calc_percentage(
-            tp1_hits, total_closed) if total_closed > 0 else "0%"
-        tp2_percent = calc_percentage(
-            tp2_hits, total_closed) if total_closed > 0 else "0%"
-        tp3_percent = calc_percentage(
-            tp3_hits, total_closed) if total_closed > 0 else "0%"
-        sl_percent = calc_percentage(
-            sl_hits, total_closed) if total_closed > 0 else "0%"
-
-        # Create the stats message
-        stats_message = f"""**:bar_chart: TRADING SIGNAL STATISTICS**
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-**:date: Period:** {date_range}
-
-**:chart_with_upwards_trend: SIGNAL OVERVIEW**
-• Total Signals Sent: **{total_signals}**
-• Total Closed Positions: **{total_closed}**
-• Currently Open: **{currently_open}**
-
-**:dart: TAKE PROFIT PERFORMANCE**
-• TP1 Hits: **{tp1_hits}**
-• TP2 Hits: **{tp2_hits}**
-• TP3 Hits: **{tp3_hits}**
-
-**:octagonal_sign: STOP LOSS**
-• SL Hits: **{sl_hits}** ({sl_percent})
-
-**:bar_chart: PERFORMANCE SUMMARY**
-• **Win Rate:** {tp1_percent}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
-
-        # Parse and send to multiple channels
-        channel_list = [ch.strip() for ch in channels.split(',')]
-        sent_channels = []
-
-        for channel_identifier in channel_list:
-            target_channel = None
-
-            # Try to parse as channel mention
-            if channel_identifier.startswith(
-                    '<#') and channel_identifier.endswith('>'):
-                channel_id = int(channel_identifier[2:-1])
-                target_channel = bot.get_channel(channel_id)
-            # Try to parse as channel ID
-            elif channel_identifier.isdigit():
-                target_channel = bot.get_channel(int(channel_identifier))
-            # Try to find by name
-            else:
-                target_channel = discord.utils.get(
-                    interaction.guild.channels,
-                    name=channel_identifier) if interaction.guild else None
-
-            if target_channel and isinstance(target_channel,
-                                             discord.TextChannel):
-                try:
-                    await target_channel.send(stats_message)
-                    sent_channels.append(target_channel.name)
-                except discord.Forbidden:
-                    await interaction.followup.send(
-                        f"❌ No permission to send to #{target_channel.name}",
-                        ephemeral=True)
-                except Exception as e:
-                    await interaction.followup.send(
-                        f"❌ Error sending to #{target_channel.name}: {str(e)}",
-                        ephemeral=True)
-
-        if sent_channels:
-            await interaction.response.send_message(
-                f"✅ Stats sent to: {', '.join(sent_channels)}", ephemeral=True)
-        else:
-            await interaction.response.send_message(
-                "❌ No valid channels found or no messages sent.",
-                ephemeral=True)
-
-    except Exception as e:
-        await interaction.response.send_message(
-            f"❌ Error sending stats: {str(e)}", ephemeral=True)
-
+# Stats command removed as per user request
 
 # ===== DM TRACKING COMMAND =====
 @bot.tree.command(
@@ -3901,8 +4372,26 @@ async def dm_status_command(interaction: discord.Interaction, message_type: str 
             await interaction.followup.send(f"❌ Invalid message type. Use: {', '.join(valid_types)}", ephemeral=True)
             return
 
+        # Clean up completed users first (those who received 14-day message)
+        completed_users = []
+        for member_id, dm_data in list(AUTO_ROLE_CONFIG["dm_schedule"].items()):
+            if dm_data.get("dm_14_sent", False):
+                completed_users.append(member_id)
+                
+        # Remove completed users from tracking
+        for member_id in completed_users:
+            del AUTO_ROLE_CONFIG["dm_schedule"][member_id]
+            
+        # Save updated config if users were removed
+        if completed_users:
+            await bot.save_auto_role_config()
+            print(f"✅ Removed {len(completed_users)} completed users from DM tracking")
+
         # Create status report
         status_report = "📬 **DM STATUS REPORT**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        if completed_users:
+            status_report += f"🧹 **Cleanup**: Removed {len(completed_users)} users who completed 14-day sequence\n\n"
         
         total_scheduled = len(AUTO_ROLE_CONFIG["dm_schedule"])
         sent_3day = sent_7day = sent_14day = 0
@@ -4197,7 +4686,8 @@ async def active_trades(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="pricetest", description="[OWNER ONLY] Test live price retrieval for a trading pair")
-@app_commands.describe(pair="Trading pair to test (e.g., EURUSD, GBPJPY)")
+@app_commands.describe(pair="Trading pair to test")
+@app_commands.autocomplete(pair=pair_autocomplete)
 async def test_price_retrieval(interaction: discord.Interaction, pair: str):
     """Test price retrieval for a trading pair"""
     if not await owner_check(interaction):
@@ -4251,6 +4741,110 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
             color=discord.Color.red()
         )
         await interaction.followup.send(embed=embed)
+
+
+# ===== ANTI-ABUSE MANAGEMENT COMMAND =====
+@bot.tree.command(name="antiabuse", description="[OWNER ONLY] Manage anti-abuse system for auto-roles")
+@app_commands.describe(
+    action="Action: view, unblock, block, or stats",
+    user_id="Discord User ID (for block/unblock actions)",
+    reason="Reason for manual block (for block action)"
+)
+async def anti_abuse_command(interaction: discord.Interaction, action: str, user_id: str = None, reason: str = None):
+    """Manage anti-abuse system"""
+    if not await owner_check(interaction):
+        return
+    
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        if action.lower() == "view":
+            # Show blocked users and statistics
+            if not AUTO_ROLE_CONFIG["role_history"]:
+                await interaction.followup.send("📋 No users in anti-abuse history.", ephemeral=True)
+                return
+            
+            blocked_users = []
+            total_users = len(AUTO_ROLE_CONFIG["role_history"])
+            
+            for uid, data in AUTO_ROLE_CONFIG["role_history"].items():
+                if isinstance(data, dict) and "blocked_reason" in data:
+                    try:
+                        member = interaction.guild.get_member(int(uid))
+                        member_name = member.display_name if member else f"User-{uid}"
+                        blocked_reason = data["blocked_reason"]
+                        blocked_at = data.get("blocked_at", "Unknown")
+                        blocked_users.append(f"• **{member_name}** (`{uid}`)\n  └ Reason: {blocked_reason}\n  └ Blocked: {blocked_at[:10]}")
+                    except Exception:
+                        continue
+            
+            report = f"🛡️ **Anti-Abuse System Report**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            report += f"• **Total users in history**: {total_users}\n"
+            report += f"• **Currently blocked**: {len(blocked_users)}\n\n"
+            
+            if blocked_users:
+                report += "**🚫 Blocked Users:**\n" + "\n".join(blocked_users[:10])
+                if len(blocked_users) > 10:
+                    report += f"\n\n*...and {len(blocked_users) - 10} more*"
+            else:
+                report += "✅ No users currently blocked"
+            
+            await interaction.followup.send(report, ephemeral=True)
+            
+        elif action.lower() == "unblock":
+            if not user_id:
+                await interaction.followup.send("❌ User ID required for unblock action", ephemeral=True)
+                return
+            
+            if user_id in AUTO_ROLE_CONFIG["role_history"]:
+                del AUTO_ROLE_CONFIG["role_history"][user_id]
+                await bot.save_auto_role_config()
+                await interaction.followup.send(f"✅ Unblocked user {user_id} from anti-abuse system", ephemeral=True)
+                await bot.log_to_discord(f"🔓 Owner manually unblocked user {user_id} from anti-abuse system")
+            else:
+                await interaction.followup.send(f"❌ User {user_id} not found in anti-abuse system", ephemeral=True)
+                
+        elif action.lower() == "block":
+            if not user_id or not reason:
+                await interaction.followup.send("❌ User ID and reason required for block action", ephemeral=True)
+                return
+            
+            AUTO_ROLE_CONFIG["role_history"][user_id] = {
+                "blocked_reason": f"manual_block: {reason}",
+                "blocked_by": interaction.user.id,
+                "blocked_at": datetime.now(AMSTERDAM_TZ).isoformat()
+            }
+            await bot.save_auto_role_config()
+            await interaction.followup.send(f"✅ Manually blocked user {user_id}: {reason}", ephemeral=True)
+            await bot.log_to_discord(f"🔒 Owner manually blocked user {user_id}: {reason}")
+            
+        elif action.lower() == "stats":
+            # Show anti-abuse statistics
+            total_history = len(AUTO_ROLE_CONFIG["role_history"])
+            blocked_new_accounts = sum(1 for data in AUTO_ROLE_CONFIG["role_history"].values() 
+                                     if isinstance(data, dict) and data.get("blocked_reason") == "account_too_new")
+            blocked_rapid_joins = sum(1 for data in AUTO_ROLE_CONFIG["role_history"].values() 
+                                    if isinstance(data, dict) and data.get("blocked_reason") == "rapid_join_pattern")
+            manual_blocks = sum(1 for data in AUTO_ROLE_CONFIG["role_history"].values() 
+                              if isinstance(data, dict) and "manual_block" in data.get("blocked_reason", ""))
+            
+            stats_report = f"📊 **Anti-Abuse Statistics**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            stats_report += f"• **Total users in history**: {total_history}\n"
+            stats_report += f"• **Blocked (new accounts)**: {blocked_new_accounts}\n"
+            stats_report += f"• **Blocked (rapid joins)**: {blocked_rapid_joins}\n"
+            stats_report += f"• **Manual blocks**: {manual_blocks}\n"
+            stats_report += f"• **Normal completions**: {total_history - blocked_new_accounts - blocked_rapid_joins - manual_blocks}\n\n"
+            stats_report += f"**🛡️ System Status**: Active\n"
+            stats_report += f"**📅 Min Account Age**: 7 days\n"
+            stats_report += f"**⏱️ Max Joins/Hour**: 5"
+            
+            await interaction.followup.send(stats_report, ephemeral=True)
+            
+        else:
+            await interaction.followup.send("❌ Invalid action. Use: view, unblock, block, or stats", ephemeral=True)
+    
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error managing anti-abuse system: {str(e)}", ephemeral=True)
 
 
 # Web server for health checks
