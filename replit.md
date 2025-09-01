@@ -8,7 +8,14 @@ This project is a professional Discord bot designed for trading signal distribut
 - Bot owner restricted to Discord ID: 462707111365836801
 - TP/SL calculations updated: TP1=20 pips, TP2=40 pips, TP3=70 pips, SL=50 pips (changed from TP2=50, TP3=100, SL=70)
 
-## Recent Changes (August 30, 2025)
+## Recent Changes (September 1, 2025)
+- **24/7 PERSISTENT TRADE TRACKING**: Implemented PostgreSQL database storage for all active trading signals, ensuring trades persist through bot restarts, updates, and downtime
+- **AUTOMATIC PRICE TRACKING**: Price tracking is now enabled by default and runs 24/7 without manual activation
+- **DATABASE-DRIVEN OPERATIONS**: All trade operations (add, update, remove) now use PostgreSQL for complete persistence and data integrity
+- **SEAMLESS RECOVERY**: Bot automatically recovers all active trades from database on startup, maintaining tracking continuity
+- **PRODUCTION-READY**: Enhanced system designed for 24/7 operation on Render.com with full database persistence
+
+## Previous Changes (August 30, 2025)
 - **CRITICAL TP/SL TRACKING FIX**: Implemented live API price-based TP/SL tracking with calculate_live_tracking_levels method for accurate monitoring while showing Discord entry prices on frontend
 - **REMOVED TELEGRAM INTEGRATION**: Completely removed all Telegram features and `/stats` command as requested, cleaned up unused imports and dependencies
 - **ENHANCED DM STATUS SYSTEM**: dmstatus command now automatically removes users who completed 14-day DM sequence for improved data management
@@ -76,7 +83,7 @@ This project is a professional Discord bot designed for trading signal distribut
 - **`/dmstatus`**: Tracks and displays which users have received 3, 7, or 14-day follow-up messages after their timed auto-role expires.
 - **`/invitetracking`**: Comprehensive invite tracking system for managing server invites, setting nicknames, viewing statistics, and tracking member retention through specific invite links.
 - **`/pricetracking`**: Toggle the live price tracking system on/off with real-time monitoring configuration.
-- **`/activetrades`**: View all currently tracked trading signals with status, TP hits, and breakeven information.
+- **`/activetrades`**: View detailed status of all tracked trading signals with live price analysis, exact position relative to SL/TP levels (e.g., "Between TP1 and TP2 - In Profit"), visual level indicators with checkmarks for hit levels, and automatic cleanup when signals complete.
 - **`/pricetest`**: Test live price retrieval for any trading pair using multiple API fallbacks.
 - **`/level`**: Check individual user level/message count or display server leaderboard with top community members ranked by activity.
 - **`/antiabuse`**: Comprehensive anti-abuse system management for viewing blocked users, manual blocking/unblocking, and viewing abuse prevention statistics.

@@ -125,7 +125,7 @@ INVITE_TRACKING = {}  # invite_code: {"nickname": str, "total_joins": int, "tota
 
 # Live price tracking system configuration
 PRICE_TRACKING_CONFIG = {
-    "enabled": False,
+    "enabled": True,  # 24/7 monitoring enabled by default
     "excluded_channel_id": "1394958907943817326",
     "owner_user_id": "462707111365836801",
     "signal_keyword": "Trade Signal For:",
@@ -501,8 +501,9 @@ class TradingBot(commands.Bot):
                             if PRICE_TRACKING_CONFIG["signal_keyword"] not in message.content:
                                 continue
                             
-                            # Skip if already being tracked
-                            if str(message.id) in PRICE_TRACKING_CONFIG["active_trades"]:
+                            # Skip if already being tracked (check both memory and database)
+                            current_trades = await self.get_active_trades_from_db()
+                            if str(message.id) in current_trades:
                                 continue
                             
                             # Parse the signal
@@ -541,8 +542,8 @@ class TradingBot(commands.Bot):
                                 trade_data["timestamp"] = message.created_at.isoformat()
                                 trade_data["recovered"] = True  # Mark as recovered signal
                                 
-                                # Add to active tracking
-                                PRICE_TRACKING_CONFIG["active_trades"][str(message.id)] = trade_data
+                                # Add to active tracking with database persistence
+                                await self.save_trade_to_db(str(message.id), trade_data)
                                 recovered_signals += 1
                                 
                                 print(f"✅ Recovered signal: {trade_data['pair']} from {message_time.strftime('%Y-%m-%d %H:%M')}")
@@ -584,13 +585,15 @@ class TradingBot(commands.Bot):
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return
         
-        if not PRICE_TRACKING_CONFIG["active_trades"]:
+        # Get active trades from database for 24/7 persistence
+        active_trades = await self.get_active_trades_from_db()
+        if not active_trades:
             return
         
         try:
             # Check each active trade
             trades_to_remove = []
-            for message_id, trade_data in list(PRICE_TRACKING_CONFIG["active_trades"].items()):
+            for message_id, trade_data in list(active_trades.items()):
                 try:
                     # Check if price levels have been hit
                     level_hit = await self.check_price_levels(message_id, trade_data)
@@ -602,11 +605,10 @@ class TradingBot(commands.Bot):
                     print(f"Error checking price for trade {message_id}: {e}")
                     trades_to_remove.append(message_id)
             
-            # Remove failed trades
+            # Remove failed trades from database
             for message_id in trades_to_remove:
-                if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
-                    del PRICE_TRACKING_CONFIG["active_trades"][message_id]
-                    print(f"Removed failed trade {message_id} from tracking")
+                await self.remove_trade_from_db(message_id)
+                print(f"Removed failed trade {message_id} from tracking")
                     
         except Exception as e:
             print(f"Error in price tracking loop: {e}")
@@ -752,6 +754,33 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Active trading signals table for 24/7 persistent tracking
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS active_trades (
+                        message_id VARCHAR(20) PRIMARY KEY,
+                        channel_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        pair VARCHAR(20) NOT NULL,
+                        action VARCHAR(10) NOT NULL,
+                        entry_price DECIMAL(12,8) NOT NULL,
+                        tp1_price DECIMAL(12,8) NOT NULL,
+                        tp2_price DECIMAL(12,8) NOT NULL,
+                        tp3_price DECIMAL(12,8) NOT NULL,
+                        sl_price DECIMAL(12,8) NOT NULL,
+                        discord_entry DECIMAL(12,8),
+                        discord_tp1 DECIMAL(12,8),
+                        discord_tp2 DECIMAL(12,8),
+                        discord_tp3 DECIMAL(12,8),
+                        discord_sl DECIMAL(12,8),
+                        live_entry DECIMAL(12,8),
+                        status VARCHAR(50) DEFAULT 'active',
+                        tp_hits TEXT DEFAULT '',
+                        breakeven_active BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
@@ -765,6 +794,9 @@ class TradingBot(commands.Bot):
             
             # Load invite tracking data
             await self.load_invite_tracking()
+            
+            # Load active trades from database for 24/7 persistence
+            await self.load_active_trades_from_db()
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -1371,8 +1403,8 @@ class TradingBot(commands.Bot):
                     trade_data["message_id"] = str(message.id)
                     trade_data["timestamp"] = message.created_at.isoformat()
                     
-                    # Add to active trades
-                    PRICE_TRACKING_CONFIG["active_trades"][str(message.id)] = trade_data
+                    # Add to active trades with database persistence
+                    await self.save_trade_to_db(str(message.id), trade_data)
                     
                     print(f"✅ Started tracking signal for {trade_data['pair']} ({trade_data['action']}) - Message ID: {message.id}")
                 else:
@@ -1554,6 +1586,142 @@ class TradingBot(commands.Bot):
         
         except Exception as e:
             print(f"❌ Error loading invite tracking from database: {str(e)}")
+
+    async def load_active_trades_from_db(self):
+        """Load active trading signals from database for 24/7 persistence"""
+        if not self.db_pool:
+            print("⚠️ No database - active trades will be in-memory only")
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Load all active trades from database
+                rows = await conn.fetch('SELECT * FROM active_trades ORDER BY created_at DESC')
+                
+                for row in rows:
+                    # Convert database row to trade_data format
+                    trade_data = {
+                        "pair": row['pair'],
+                        "action": row['action'],
+                        "entry": float(row['entry_price']),
+                        "tp1": float(row['tp1_price']),
+                        "tp2": float(row['tp2_price']),
+                        "tp3": float(row['tp3_price']),
+                        "sl": float(row['sl_price']),
+                        "discord_entry": float(row['discord_entry']) if row['discord_entry'] else None,
+                        "discord_tp1": float(row['discord_tp1']) if row['discord_tp1'] else None,
+                        "discord_tp2": float(row['discord_tp2']) if row['discord_tp2'] else None,
+                        "discord_tp3": float(row['discord_tp3']) if row['discord_tp3'] else None,
+                        "discord_sl": float(row['discord_sl']) if row['discord_sl'] else None,
+                        "live_entry": float(row['live_entry']) if row['live_entry'] else None,
+                        "status": row['status'],
+                        "tp_hits": row['tp_hits'].split(',') if row['tp_hits'] else [],
+                        "breakeven_active": row['breakeven_active'],
+                        "channel_id": row['channel_id'],
+                        "guild_id": row['guild_id'],
+                        "message_id": row['message_id'],
+                        "created_at": row['created_at'].isoformat(),
+                        "last_updated": row['last_updated'].isoformat()
+                    }
+                    
+                    # Store in memory for quick access
+                    PRICE_TRACKING_CONFIG["active_trades"][row['message_id']] = trade_data
+                
+                if PRICE_TRACKING_CONFIG["active_trades"]:
+                    print(f"🔄 Loaded {len(PRICE_TRACKING_CONFIG['active_trades'])} active trades from database")
+                    print("✅ 24/7 trade tracking fully restored from database")
+                else:
+                    print("📊 No active trades found in database - ready for new signals")
+        
+        except Exception as e:
+            print(f"❌ Error loading active trades from database: {str(e)}")
+            print("   Continuing with in-memory storage only")
+
+    async def save_trade_to_db(self, message_id: str, trade_data: dict):
+        """Save a new trading signal to database for persistence"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute('''
+                    INSERT INTO active_trades (
+                        message_id, channel_id, guild_id, pair, action,
+                        entry_price, tp1_price, tp2_price, tp3_price, sl_price,
+                        discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
+                        live_entry, status, tp_hits, breakeven_active
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                ''', 
+                message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
+                trade_data["pair"], trade_data["action"], 
+                trade_data["entry"], trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"],
+                trade_data.get("discord_entry"), trade_data.get("discord_tp1"), trade_data.get("discord_tp2"), 
+                trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
+                trade_data.get("live_entry"), trade_data.get("status", "active"),
+                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                )
+                
+                # Also update in-memory for fast access
+                PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
+                
+        except Exception as e:
+            print(f"❌ Error saving trade to database: {str(e)}")
+
+    async def update_trade_in_db(self, message_id: str, trade_data: dict):
+        """Update an existing trade in database"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute('''
+                    UPDATE active_trades SET 
+                        status = $2, tp_hits = $3, breakeven_active = $4, last_updated = NOW()
+                    WHERE message_id = $1
+                ''', 
+                message_id, trade_data.get("status", "active"),
+                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                )
+                
+                # Also update in-memory
+                PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
+                
+        except Exception as e:
+            print(f"❌ Error updating trade in database: {str(e)}")
+
+    async def remove_trade_from_db(self, message_id: str):
+        """Remove completed trade from database"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute('DELETE FROM active_trades WHERE message_id = $1', message_id)
+                
+                # Also remove from in-memory
+                if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+                    del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+                
+        except Exception as e:
+            print(f"❌ Error removing trade from database: {str(e)}")
+
+    async def get_active_trades_from_db(self):
+        """Get current active trades from database (used by commands)"""
+        if not self.db_pool:
+            return PRICE_TRACKING_CONFIG["active_trades"]
+        
+        try:
+            # First try to use in-memory data for speed
+            if PRICE_TRACKING_CONFIG["active_trades"]:
+                return PRICE_TRACKING_CONFIG["active_trades"]
+            
+            # If in-memory is empty, load from database
+            await self.load_active_trades_from_db()
+            return PRICE_TRACKING_CONFIG["active_trades"]
+        
+        except Exception as e:
+            print(f"❌ Error getting active trades: {str(e)}")
+            return PRICE_TRACKING_CONFIG["active_trades"]
 
     async def save_invite_tracking(self):
         """Save invite tracking data to database"""
@@ -2009,13 +2177,16 @@ class TradingBot(commands.Bot):
                 # After TP2, activate breakeven
                 trade_data["breakeven_active"] = True
                 trade_data["status"] = "active (tp2 hit - breakeven active)"
+                # Update in database
+                await self.update_trade_in_db(message_id, trade_data)
             elif tp_level == "tp1":
                 trade_data["status"] = "active (tp1 hit)"
+                # Update in database
+                await self.update_trade_in_db(message_id, trade_data)
             elif tp_level == "tp3":
                 trade_data["status"] = "completed (tp3 hit)"
-                # Remove from active trades after TP3
-                if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
-                    del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+                # Remove from active trades after TP3 (database and memory)
+                await self.remove_trade_from_db(message_id)
             
             # Send notification
             await self.send_tp_notification(message_id, trade_data, tp_level)
@@ -2028,9 +2199,8 @@ class TradingBot(commands.Bot):
         try:
             trade_data["status"] = "closed (sl hit)"
             
-            # Remove from active trades
-            if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
-                del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+            # Remove from active trades (database and memory)
+            await self.remove_trade_from_db(message_id)
             
             # Send notification
             await self.send_sl_notification(message_id, trade_data)
@@ -2043,9 +2213,8 @@ class TradingBot(commands.Bot):
         try:
             trade_data["status"] = "closed (breakeven after tp2)"
             
-            # Remove from active trades
-            if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
-                del PRICE_TRACKING_CONFIG["active_trades"][message_id]
+            # Remove from active trades (database and memory)
+            await self.remove_trade_from_db(message_id)
             
             # Send breakeven notification
             await self.send_breakeven_notification(message_id, trade_data)
@@ -4655,55 +4824,164 @@ async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool)
     
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="activetrades", description="[OWNER ONLY] View all currently tracked trading signals")
+@bot.tree.command(name="activetrades", description="[OWNER ONLY] View detailed status of all tracked trading signals")
 async def active_trades(interaction: discord.Interaction):
-    """Show active trades being monitored"""
+    """Show active trades with detailed price level analysis"""
     if not await owner_check(interaction):
         return
     
     if not PRICE_TRACKING_CONFIG["enabled"]:
         embed = discord.Embed(
-            title="📊 Active Trades",
+            title="📊 Active Signal Tracking",
             description="❌ Price tracking system is currently disabled",
             color=discord.Color.red()
         )
         await interaction.response.send_message(embed=embed)
         return
     
-    active_trades = PRICE_TRACKING_CONFIG["active_trades"]
+    # Get active trades from database for 24/7 persistence
+    active_trades = await bot.get_active_trades_from_db()
     
     if not active_trades:
         embed = discord.Embed(
-            title="📊 Active Trades",
-            description="✅ No active trades being monitored",
+            title="📊 Active Signal Tracking",
+            description="✅ No trading signals being monitored\n\n*Signals are automatically removed when they hit SL or TP3*",
             color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed)
         return
     
+    await interaction.response.defer()
+    
     embed = discord.Embed(
-        title="📊 Active Trades",
-        description=f"Currently monitoring **{len(active_trades)}** active trades:",
+        title="📊 Active Signal Tracking",
+        description=f"Monitoring **{len(active_trades)}** trading signals with live price analysis:",
         color=discord.Color.green()
     )
     
-    for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:10]):  # Limit to 10 for embed size
-        status_emoji = "🟢" if trade_data["status"] == "active" else "🟡"
-        tp_status = f"TP Hits: {', '.join(trade_data['tp_hits']) if trade_data['tp_hits'] else 'None'}"
-        breakeven_text = " (Breakeven Active)" if trade_data.get("breakeven_active") else ""
-        
-        embed.add_field(
-            name=f"{status_emoji} {trade_data['pair']} - {trade_data['action']}",
-            value=f"Entry: {trade_data['entry']}\n"
-                  f"{tp_status}{breakeven_text}\n"
-                  f"Message: {message_id[:8]}...",
-            inline=True
-        )
+    # Process each trade and get current price status
+    for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
+        try:
+            # Get current live price
+            current_price = await bot.get_live_price(trade_data["pair"])
+            
+            if current_price:
+                # Analyze current position
+                status_info = await analyze_trade_position(trade_data, current_price)
+                price_status = f"**Current: ${current_price:.5f}** {status_info['emoji']}\n"
+                position_text = f"*{status_info['position']}*"
+            else:
+                price_status = "**Current: Price unavailable**\n"
+                position_text = "*Unable to determine position*"
+            
+            # Build level display
+            levels_display = build_levels_display(trade_data, current_price)
+            
+            # TP hits status
+            tp_hits = trade_data.get('tp_hits', [])
+            tp_status = f"**TP Hits:** {', '.join([tp.upper() for tp in tp_hits]) if tp_hits else 'None'}"
+            
+            # Breakeven status
+            breakeven_status = ""
+            if trade_data.get("breakeven_active"):
+                breakeven_status = "\n🔄 **Breakeven SL Active** (TP2 hit)"
+            
+            # Time tracking
+            time_status = f"\n⏱️ Message: {message_id[:8]}..."
+            
+            embed.add_field(
+                name=f"📈 {trade_data['pair']} - {trade_data['action']}",
+                value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{time_status}",
+                inline=False
+            )
+            
+        except Exception as e:
+            # Fallback display if price retrieval fails
+            embed.add_field(
+                name=f"⚠️ {trade_data['pair']} - {trade_data['action']}",
+                value=f"**Error getting price data**\nEntry: ${trade_data['entry']}\nStatus: {trade_data.get('status', 'active')}",
+                inline=False
+            )
     
-    if len(active_trades) > 10:
-        embed.set_footer(text=f"Showing 10 of {len(active_trades)} active trades")
+    if len(active_trades) > 8:
+        embed.set_footer(text=f"Showing 8 of {len(active_trades)} active signals • Signals auto-removed after SL/TP3 hit")
+    else:
+        embed.set_footer(text="Signals automatically removed when SL or TP3 is hit (after notification sent)")
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
+
+async def analyze_trade_position(trade_data: dict, current_price: float) -> dict:
+    """Analyze where the current price stands relative to trade levels"""
+    action = trade_data["action"]
+    entry = trade_data["entry"]
+    tp1 = trade_data["tp1"]
+    tp2 = trade_data["tp2"]
+    tp3 = trade_data["tp3"]
+    sl = trade_data["sl"]
+    
+    if action == "BUY":
+        if current_price <= sl:
+            return {"emoji": "🔴", "position": "At/Below SL - Stop Loss Level"}
+        elif current_price <= entry:
+            return {"emoji": "🟡", "position": "Below Entry - Potential Loss Zone"}
+        elif current_price <= tp1:
+            return {"emoji": "🟠", "position": "Between Entry and TP1"}
+        elif current_price <= tp2:
+            return {"emoji": "🟢", "position": "Between TP1 and TP2 - In Profit"}
+        elif current_price <= tp3:
+            return {"emoji": "💚", "position": "Between TP2 and TP3 - Strong Profit"}
+        else:
+            return {"emoji": "🚀", "position": "Above TP3 - Maximum Profit Zone"}
+    
+    else:  # SELL
+        if current_price >= sl:
+            return {"emoji": "🔴", "position": "At/Above SL - Stop Loss Level"}
+        elif current_price >= entry:
+            return {"emoji": "🟡", "position": "Above Entry - Potential Loss Zone"}
+        elif current_price >= tp1:
+            return {"emoji": "🟠", "position": "Between Entry and TP1"}
+        elif current_price >= tp2:
+            return {"emoji": "🟢", "position": "Between TP1 and TP2 - In Profit"}
+        elif current_price >= tp3:
+            return {"emoji": "💚", "position": "Between TP2 and TP3 - Strong Profit"}
+        else:
+            return {"emoji": "🚀", "position": "Below TP3 - Maximum Profit Zone"}
+
+def build_levels_display(trade_data: dict, current_price: float = None) -> str:
+    """Build a visual display of all price levels"""
+    action = trade_data["action"]
+    entry = trade_data["entry"]
+    tp1 = trade_data["tp1"]
+    tp2 = trade_data["tp2"]
+    tp3 = trade_data["tp3"]
+    sl = trade_data["sl"]
+    tp_hits = trade_data.get('tp_hits', [])
+    
+    # Create level indicators
+    def get_level_indicator(level_name, price, hit=False):
+        hit_marker = "✅" if hit else "⭕"
+        return f"{hit_marker} **{level_name}:** ${price:.5f}"
+    
+    if action == "BUY":
+        # For BUY orders: SL < Entry < TP1 < TP2 < TP3
+        levels = [
+            get_level_indicator("SL", sl),
+            get_level_indicator("Entry", entry),
+            get_level_indicator("TP1", tp1, "tp1" in tp_hits),
+            get_level_indicator("TP2", tp2, "tp2" in tp_hits),
+            get_level_indicator("TP3", tp3, "tp3" in tp_hits)
+        ]
+    else:
+        # For SELL orders: TP3 < TP2 < TP1 < Entry < SL
+        levels = [
+            get_level_indicator("SL", sl),
+            get_level_indicator("Entry", entry),
+            get_level_indicator("TP1", tp1, "tp1" in tp_hits),
+            get_level_indicator("TP2", tp2, "tp2" in tp_hits),
+            get_level_indicator("TP3", tp3, "tp3" in tp_hits)
+        ]
+    
+    return "\n".join(levels)
 
 @bot.tree.command(name="pricetest", description="[OWNER ONLY] Test live price retrieval for a trading pair")
 @app_commands.describe(pair="Trading pair to test")
