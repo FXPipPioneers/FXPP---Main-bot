@@ -1794,20 +1794,20 @@ class TradingBot(commands.Bot):
         # Let's try multiple variations for each API to find what works
         symbol_mappings = {
             "fxapi": {
-                "US100": ["US100", "USTEC", "NDX", "NASDAQ"],   # Try multiple variations
-                "GER40": ["GER40", "DAX", "DE40"],               # Try multiple variations  
-                "GER30": ["GER30", "DAX", "DE30"],               # Try multiple variations
-                "NAS100": ["US100", "USTEC", "NDX", "NASDAQ"],  # Alternative name for US100
+                "US100": ["NASDAQ", "QQQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF tracks Nasdaq 100)
+                "GER40": ["GDAXI", "DE40", "FDAX", "GER40"],     # German DAX alternatives (GDAXI is correct DAX)  
+                "GER30": ["GDAXI", "DE30", "FDAX", "GER30"],     # German DAX alternatives
+                "NAS100": ["NASDAQ", "QQQ", "USTEC", "NQ"],      # Alternative name for US100
                 "US500": ["US500", "SPX", "SPY"],               # S&P 500
                 "UK100": ["UK100", "UKX", "FTSE"],              # FTSE 100
                 "JPN225": ["JPN225", "N225", "NKY"],             # Nikkei 225
                 "AUS200": ["AUS200", "ASX", "XJO"]               # ASX 200
             },
             "twelve_data": {
-                "US100": ["NDX", "IXIC", "USTEC"],              # Twelve Data variations
-                "GER40": ["DAX", "GDAXI", "DE40"],              # German DAX index
-                "GER30": ["DAX", "GDAXI", "DE30"],              # Alternative name
-                "NAS100": ["NDX", "IXIC", "USTEC"],             # Alternative name for Nasdaq 100
+                "US100": ["QQQ", "NASDAQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF available on free tier)
+                "GER40": ["GDAXI", "FDAX", "DAX30", "DE40"],     # German DAX alternatives (GDAXI should give correct ~24051 price)
+                "GER30": ["GDAXI", "FDAX", "DAX30", "DE30"],     # German DAX alternatives
+                "NAS100": ["QQQ", "NASDAQ", "USTEC", "NQ"],      # Alternative name for Nasdaq 100
                 "US500": ["SPX", "GSPC"],                       # S&P 500
                 "UK100": ["UKX", "FTSE"],                       # FTSE 100
                 "JPN225": ["N225", "NKY"],                      # Nikkei 225
@@ -1819,10 +1819,10 @@ class TradingBot(commands.Bot):
                 # We'll skip Alpha Vantage for indices
             },
             "fmp": {
-                "US100": ["^NDX", "^IXIC", "NDX"],             # FMP variations
-                "GER40": ["^GDAXI", "^DAX", "GDAXI"],          # German DAX index
-                "GER30": ["^GDAXI", "^DAX", "GDAXI"],          # Alternative name
-                "NAS100": ["^NDX", "^IXIC", "NDX"],            # Alternative name for Nasdaq 100
+                "US100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],       # Nasdaq 100 ETF and index symbols
+                "GER40": ["^GDAXI", "EXS1", "DAXEX", "FDAX"],   # German DAX alternatives (^GDAXI should give correct price)
+                "GER30": ["^GDAXI", "EXS1", "DAXEX", "FDAX"],   # German DAX alternatives
+                "NAS100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],      # Alternative name for Nasdaq 100
                 "US500": ["^SPX", "^GSPC"],                    # S&P 500
                 "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
                 "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
