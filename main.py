@@ -1789,22 +1789,79 @@ class TradingBot(commands.Bot):
         print(f"⚠️ Primary APIs failed for {pair_clean}, trying all APIs as fallback")
         return await self.get_verified_price_all_apis(pair_clean)
     
+    def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
+        """Map user-friendly symbols to API-specific symbols"""
+        # Symbol mapping for each API - indices have different names across APIs
+        symbol_mappings = {
+            "fxapi": {
+                "US100": "NASDAQ",  # FXApi uses NASDAQ for Nasdaq 100
+                "GER40": "DAX",     # FXApi uses DAX for German index
+                "GER30": "DAX",     # Alternative name for German index
+                "NAS100": "NASDAQ", # Alternative name for Nasdaq
+                "US500": "SPX",     # S&P 500
+                "UK100": "UKX",     # FTSE 100
+                "JPN225": "NKY",    # Nikkei 225
+                "AUS200": "ASX"     # ASX 200
+            },
+            "twelve_data": {
+                "US100": "IXIC",    # Twelve Data uses IXIC for Nasdaq Composite
+                "GER40": "GDAXI",   # German index symbol
+                "GER30": "GDAXI",   # Alternative name
+                "NAS100": "IXIC",   # Alternative name
+                "US500": "SPX",     # S&P 500
+                "UK100": "UKX",     # FTSE 100
+                "JPN225": "N225",   # Nikkei 225
+                "AUS200": "AXJO"    # ASX 200
+            },
+            "alpha_vantage": {
+                # Alpha Vantage doesn't support indices through currency exchange rate
+                # These symbols won't work with the current implementation
+                # We'll skip Alpha Vantage for indices
+            },
+            "fmp": {
+                "US100": "^IXIC",   # FMP uses ^IXIC for Nasdaq
+                "GER40": "^GDAXI",  # German index
+                "GER30": "^GDAXI",  # Alternative name
+                "NAS100": "^IXIC",  # Alternative name
+                "US500": "^GSPC",   # S&P 500
+                "UK100": "^FTSE",   # FTSE 100
+                "JPN225": "^N225",  # Nikkei 225
+                "AUS200": "^AXJO"   # ASX 200
+            }
+        }
+        
+        # Get API-specific mapping
+        if api_name in symbol_mappings and pair_clean in symbol_mappings[api_name]:
+            mapped_symbol = symbol_mappings[api_name][pair_clean]
+            print(f"🔄 Mapping {pair_clean} to {mapped_symbol} for {api_name}")
+            return mapped_symbol
+        
+        # Return original symbol if no mapping found
+        return pair_clean
+
     async def get_price_from_single_api(self, api_name: str, pair_clean: str) -> Optional[float]:
         """Get price from a specific API"""
         try:
+            # Map symbol to API-specific format
+            api_symbol = self.get_api_symbol(api_name, pair_clean)
+            
+            # Skip Alpha Vantage for indices (it doesn't support them via currency exchange)
+            if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]:
+                print(f"⏭️ Skipping Alpha Vantage for index {pair_clean} (not supported)")
+                return None
             if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
                 params = {
                     "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
-                    "symbols": pair_clean
+                    "symbols": api_symbol
                 }
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if "rates" in data and pair_clean in data["rates"]:
-                                return float(data["rates"][pair_clean])
+                            if "rates" in data and api_symbol in data["rates"]:
+                                return float(data["rates"][api_symbol])
                         elif response.status == 429:
                             await self.log_api_limit_warning("FXApi", "Rate limit exceeded - switching to backup API")
                         elif response.status == 403:
@@ -1813,7 +1870,7 @@ class TradingBot(commands.Bot):
             elif api_name == "twelve_data" and PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
                 params = {
-                    "symbol": pair_clean,
+                    "symbol": api_symbol,
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
                 }
                 
@@ -1832,8 +1889,8 @@ class TradingBot(commands.Bot):
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
                 params = {
                     "function": "CURRENCY_EXCHANGE_RATE",
-                    "from_currency": pair_clean[:3],
-                    "to_currency": pair_clean[3:],
+                    "from_currency": api_symbol[:3],
+                    "to_currency": api_symbol[3:],
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
                 }
                 
@@ -1851,7 +1908,7 @@ class TradingBot(commands.Bot):
                             await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
             
             elif api_name == "fmp" and PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{pair_clean}"
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{api_symbol}"
                 params = {
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
                 }
@@ -1882,18 +1939,19 @@ class TradingBot(commands.Bot):
         # Try FXApi first
         try:
             if PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
+                api_symbol = self.get_api_symbol("fxapi", pair_clean)
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
                 params = {
                     "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
-                    "symbols": pair_clean
+                    "symbols": api_symbol
                 }
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if "rates" in data and pair_clean in data["rates"]:
-                                prices["fxapi"] = float(data["rates"][pair_clean])
+                            if "rates" in data and api_symbol in data["rates"]:
+                                prices["fxapi"] = float(data["rates"][api_symbol])
                         elif response.status == 429:
                             api_errors["fxapi"] = "rate_limit"
                             await self.log_api_limit_warning("FXApi", "Rate limit exceeded - consider upgrading plan")
@@ -1907,9 +1965,10 @@ class TradingBot(commands.Bot):
         # Try Twelve Data API
         try:
             if PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
+                api_symbol = self.get_api_symbol("twelve_data", pair_clean)
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
                 params = {
-                    "symbol": pair_clean,
+                    "symbol": api_symbol,
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
                 }
                 
@@ -1929,14 +1988,16 @@ class TradingBot(commands.Bot):
             api_errors["twelve_data"] = str(e)
             print(f"Twelve Data API failed for {pair_clean}: {e}")
         
-        # Try Alpha Vantage API
+        # Try Alpha Vantage API (skip for indices)
         try:
-            if PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]:
+            if (PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"] and 
+                pair_clean not in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]):
+                api_symbol = self.get_api_symbol("alpha_vantage", pair_clean)
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
                 params = {
                     "function": "CURRENCY_EXCHANGE_RATE",
-                    "from_currency": pair_clean[:3],
-                    "to_currency": pair_clean[3:],
+                    "from_currency": api_symbol[:3],
+                    "to_currency": api_symbol[3:],
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
                 }
                 
@@ -1961,7 +2022,8 @@ class TradingBot(commands.Bot):
         # Try Financial Modeling Prep API
         try:
             if PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{pair_clean}"
+                api_symbol = self.get_api_symbol("fmp", pair_clean)
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{api_symbol}"
                 params = {
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
                 }
@@ -2070,40 +2132,84 @@ class TradingBot(commands.Bot):
                         trade_data["pair"] = parts[1].strip()
                         break
             
-            # Extract action (BUY/SELL)
-            for line in lines:
-                if "BUY" in line.upper() or "SELL" in line.upper():
-                    if "BUY" in line.upper():
-                        trade_data["action"] = "BUY"
-                    else:
-                        trade_data["action"] = "SELL"
-                    break
+            # Extract action from "Entry Type: Buy execution" or "Entry Type: Sell execution"
+            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
+            if entry_type_match:
+                trade_data["action"] = entry_type_match.group(1).upper()
+            else:
+                # Fallback to old format detection
+                for line in lines:
+                    if "BUY" in line.upper() or "SELL" in line.upper():
+                        if "BUY" in line.upper():
+                            trade_data["action"] = "BUY"
+                        else:
+                            trade_data["action"] = "SELL"
+                        break
             
-            # Extract prices using regex
-            entry_match = re.search(r'Entry[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            # Extract entry price from "Entry Price: $3473.50" (handles $ symbol)
+            entry_match = re.search(r'Entry Price:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
             if entry_match:
                 trade_data["entry"] = float(entry_match.group(1))
+            else:
+                # Fallback to old format "Entry: price"
+                entry_match = re.search(r'Entry[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                if entry_match:
+                    trade_data["entry"] = float(entry_match.group(1))
             
-            tp1_match = re.search(r'TP1[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            # Extract Take Profit levels
+            tp1_match = re.search(r'Take Profit 1:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
             if tp1_match:
                 trade_data["tp1"] = float(tp1_match.group(1))
+            else:
+                # Fallback to old format "TP1: price"
+                tp1_match = re.search(r'TP1[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                if tp1_match:
+                    trade_data["tp1"] = float(tp1_match.group(1))
             
-            tp2_match = re.search(r'TP2[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            tp2_match = re.search(r'Take Profit 2:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
             if tp2_match:
                 trade_data["tp2"] = float(tp2_match.group(1))
+            else:
+                # Fallback to old format "TP2: price"
+                tp2_match = re.search(r'TP2[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                if tp2_match:
+                    trade_data["tp2"] = float(tp2_match.group(1))
             
-            tp3_match = re.search(r'TP3[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            tp3_match = re.search(r'Take Profit 3:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
             if tp3_match:
                 trade_data["tp3"] = float(tp3_match.group(1))
+            else:
+                # Fallback to old format "TP3: price"
+                tp3_match = re.search(r'TP3[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                if tp3_match:
+                    trade_data["tp3"] = float(tp3_match.group(1))
             
-            sl_match = re.search(r'SL[:\s]*([0-9.]+)', content, re.IGNORECASE)
+            # Extract Stop Loss from "Stop Loss: $3478.50"
+            sl_match = re.search(r'Stop Loss:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
             if sl_match:
                 trade_data["sl"] = float(sl_match.group(1))
+            else:
+                # Fallback to old format "SL: price"
+                sl_match = re.search(r'SL[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                if sl_match:
+                    trade_data["sl"] = float(sl_match.group(1))
+            
+            # Debug logging to help troubleshoot parsing issues
+            print(f"🔍 Parsing signal content: {content[:100]}...")
+            print(f"   Extracted - Pair: {trade_data['pair']}, Action: {trade_data['action']}")
+            print(f"   Extracted - Entry: {trade_data['entry']}, TP1: {trade_data['tp1']}, TP2: {trade_data['tp2']}, TP3: {trade_data['tp3']}, SL: {trade_data['sl']}")
             
             # Validate required fields
             if all([trade_data["pair"], trade_data["action"], trade_data["entry"], 
                    trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"]]):
+                print(f"✅ Successfully parsed signal for {trade_data['pair']} ({trade_data['action']})")
                 return trade_data
+            else:
+                missing_fields = []
+                for field, value in trade_data.items():
+                    if field in ["pair", "action", "entry", "tp1", "tp2", "tp3", "sl"] and value is None:
+                        missing_fields.append(field)
+                print(f"❌ Signal parsing failed - missing fields: {missing_fields}")
             
         except Exception as e:
             print(f"Error parsing signal: {e}")
