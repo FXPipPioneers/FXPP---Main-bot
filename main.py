@@ -1791,27 +1791,27 @@ class TradingBot(commands.Bot):
     
     def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
         """Map user-friendly symbols to API-specific symbols"""
-        # Symbol mapping for each API - indices have different names across APIs
+        # Let's try multiple variations for each API to find what works
         symbol_mappings = {
             "fxapi": {
-                "US100": "US100",   # FXApi actually uses US100 directly
-                "GER40": "GER40",   # FXApi uses GER40 directly  
-                "GER30": "GER30",   # GER30 directly
-                "NAS100": "US100",  # Alternative name for US100
-                "US500": "US500",   # S&P 500
-                "UK100": "UK100",   # FTSE 100
-                "JPN225": "JPN225", # Nikkei 225
-                "AUS200": "AUS200"  # ASX 200
+                "US100": ["US100", "USTEC", "NDX", "NASDAQ"],   # Try multiple variations
+                "GER40": ["GER40", "DAX", "DE40"],               # Try multiple variations  
+                "GER30": ["GER30", "DAX", "DE30"],               # Try multiple variations
+                "NAS100": ["US100", "USTEC", "NDX", "NASDAQ"],  # Alternative name for US100
+                "US500": ["US500", "SPX", "SPY"],               # S&P 500
+                "UK100": ["UK100", "UKX", "FTSE"],              # FTSE 100
+                "JPN225": ["JPN225", "N225", "NKY"],             # Nikkei 225
+                "AUS200": ["AUS200", "ASX", "XJO"]               # ASX 200
             },
             "twelve_data": {
-                "US100": "NDX",     # Twelve Data uses NDX for Nasdaq 100
-                "GER40": "DAX",     # German DAX index
-                "GER30": "DAX",     # Alternative name
-                "NAS100": "NDX",    # Alternative name for Nasdaq 100
-                "US500": "SPX",     # S&P 500
-                "UK100": "UKX",     # FTSE 100
-                "JPN225": "N225",   # Nikkei 225
-                "AUS200": "XJO"     # ASX 200
+                "US100": ["NDX", "IXIC", "USTEC"],              # Twelve Data variations
+                "GER40": ["DAX", "GDAXI", "DE40"],              # German DAX index
+                "GER30": ["DAX", "GDAXI", "DE30"],              # Alternative name
+                "NAS100": ["NDX", "IXIC", "USTEC"],             # Alternative name for Nasdaq 100
+                "US500": ["SPX", "GSPC"],                       # S&P 500
+                "UK100": ["UKX", "FTSE"],                       # FTSE 100
+                "JPN225": ["N225", "NKY"],                      # Nikkei 225
+                "AUS200": ["XJO", "AXJO"]                       # ASX 200
             },
             "alpha_vantage": {
                 # Alpha Vantage doesn't support indices through currency exchange rate
@@ -1819,22 +1819,27 @@ class TradingBot(commands.Bot):
                 # We'll skip Alpha Vantage for indices
             },
             "fmp": {
-                "US100": "^NDX",    # FMP uses ^NDX for Nasdaq 100
-                "GER40": "^GDAXI",  # German DAX index
-                "GER30": "^GDAXI",  # Alternative name
-                "NAS100": "^NDX",   # Alternative name for Nasdaq 100
-                "US500": "^SPX",    # S&P 500
-                "UK100": "^UKX",    # FTSE 100
-                "JPN225": "^N225",  # Nikkei 225
-                "AUS200": "^AXJO"   # ASX 200
+                "US100": ["^NDX", "^IXIC", "NDX"],             # FMP variations
+                "GER40": ["^GDAXI", "^DAX", "GDAXI"],          # German DAX index
+                "GER30": ["^GDAXI", "^DAX", "GDAXI"],          # Alternative name
+                "NAS100": ["^NDX", "^IXIC", "NDX"],            # Alternative name for Nasdaq 100
+                "US500": ["^SPX", "^GSPC"],                    # S&P 500
+                "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
+                "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
+                "AUS200": ["^AXJO", "^XJO"]                    # ASX 200
             }
         }
         
-        # Get API-specific mapping
+        # Get API-specific mapping - return first symbol to try
         if api_name in symbol_mappings and pair_clean in symbol_mappings[api_name]:
-            mapped_symbol = symbol_mappings[api_name][pair_clean]
-            print(f"🔄 Mapping {pair_clean} to {mapped_symbol} for {api_name}")
-            return mapped_symbol
+            symbol_list = symbol_mappings[api_name][pair_clean]
+            if isinstance(symbol_list, list) and symbol_list:
+                mapped_symbol = symbol_list[0]  # Use first symbol for now
+                print(f"🔄 Mapping {pair_clean} to {mapped_symbol} for {api_name} (from options: {symbol_list})")
+                return mapped_symbol
+            elif isinstance(symbol_list, str):
+                print(f"🔄 Mapping {pair_clean} to {symbol_list} for {api_name}")
+                return symbol_list
         
         # Return original symbol if no mapping found
         return pair_clean
@@ -1857,11 +1862,19 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
+                    print(f"🔍 FXApi request: {url} with params: {params}")
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        response_text = await response.text()
+                        print(f"🔍 FXApi response status: {response.status}")
+                        print(f"🔍 FXApi response: {response_text[:500]}...")
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and api_symbol in data["rates"]:
-                                return float(data["rates"][api_symbol])
+                                price = float(data["rates"][api_symbol])
+                                print(f"✅ FXApi found price for {api_symbol}: {price}")
+                                return price
+                            else:
+                                print(f"❌ FXApi: Symbol {api_symbol} not found in rates. Available symbols: {list(data.get('rates', {}).keys())[:10]}...")
                         elif response.status == 429:
                             await self.log_api_limit_warning("FXApi", "Rate limit exceeded - switching to backup API")
                         elif response.status == 403:
@@ -1875,13 +1888,22 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
+                    print(f"🔍 Twelve Data request: {url} with params: {params}")
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        response_text = await response.text()
+                        print(f"🔍 Twelve Data response status: {response.status}")
+                        print(f"🔍 Twelve Data response: {response_text[:500]}...")
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
-                                return float(data["price"])
+                                price = float(data["price"])
+                                print(f"✅ Twelve Data found price for {api_symbol}: {price}")
+                                return price
                             elif "message" in data and "limit" in data["message"].lower():
+                                print(f"❌ Twelve Data: Usage limit reached. Data: {data}")
                                 await self.log_api_limit_warning("Twelve Data", f"Usage limit: {data['message']}")
+                            else:
+                                print(f"❌ Twelve Data: No 'price' field found. Data: {data}")
                         elif response.status == 429:
                             await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - switching to backup")
             
@@ -1914,19 +1936,28 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
+                    print(f"🔍 FMP request: {url} with params: {params}")
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        response_text = await response.text()
+                        print(f"🔍 FMP response status: {response.status}")
+                        print(f"🔍 FMP response: {response_text[:500]}...")
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
-                                return float(data[0]["price"])
+                                price = float(data[0]["price"])
+                                print(f"✅ FMP found price for {api_symbol}: {price}")
+                                return price
                             elif isinstance(data, dict) and "Error Message" in data:
+                                print(f"❌ FMP: Error message received. Data: {data}")
                                 if "limit" in data["Error Message"].lower():
                                     await self.log_api_limit_warning("Financial Modeling Prep", f"Usage limit: {data['Error Message']}")
+                            else:
+                                print(f"❌ FMP: Unexpected data format. Data: {data}")
                         elif response.status == 429:
                             await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded")
         
         except Exception as e:
-            print(f"{api_name} failed for {pair_clean}: {e}")
+            print(f"❌ {api_name} failed for {pair_clean} (mapped to {api_symbol}): {e}")
         
         return None
     
