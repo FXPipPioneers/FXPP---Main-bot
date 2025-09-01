@@ -1783,10 +1783,10 @@ class TradingBot(commands.Bot):
             if price is not None:
                 # Update rotation for next check
                 PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
-                print(f"✅ Price from {api_name} for {pair_clean}: ${price:.5f}")
+                await self.log_to_discord(f"✅ **SUCCESS:** Price from {api_name} for {pair_clean}: ${price:.5f}")
                 return price
         
-        print(f"⚠️ Primary APIs failed for {pair_clean}, trying all APIs as fallback")
+        await self.log_to_discord(f"⚠️ **Primary APIs failed** for {pair_clean}, trying all APIs as fallback")
         return await self.get_verified_price_all_apis(pair_clean)
     
     def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
@@ -1835,10 +1835,10 @@ class TradingBot(commands.Bot):
             symbol_list = symbol_mappings[api_name][pair_clean]
             if isinstance(symbol_list, list) and symbol_list:
                 mapped_symbol = symbol_list[0]  # Use first symbol for now
-                print(f"🔄 Mapping {pair_clean} to {mapped_symbol} for {api_name} (from options: {symbol_list})")
+                print(f"🔄 Mapping {pair_clean} → {mapped_symbol} for {api_name} (from options: {symbol_list})")
                 return mapped_symbol
             elif isinstance(symbol_list, str):
-                print(f"🔄 Mapping {pair_clean} to {symbol_list} for {api_name}")
+                print(f"🔄 Mapping {pair_clean} → {symbol_list} for {api_name}")
                 return symbol_list
         
         # Return original symbol if no mapping found
@@ -1862,11 +1862,12 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    print(f"🔍 FXApi request: {url} with params: {params}")
+                    debug_msg = f"🔍 **FXApi Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
+                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
-                        print(f"🔍 FXApi response status: {response.status}")
-                        print(f"🔍 FXApi response: {response_text[:500]}...")
+                        response_debug = f"🔍 **FXApi Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
+                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and api_symbol in data["rates"]:
@@ -1888,11 +1889,12 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    print(f"🔍 Twelve Data request: {url} with params: {params}")
+                    debug_msg = f"🔍 **Twelve Data Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
+                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
-                        print(f"🔍 Twelve Data response status: {response.status}")
-                        print(f"🔍 Twelve Data response: {response_text[:500]}...")
+                        response_debug = f"🔍 **Twelve Data Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
+                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
@@ -1936,11 +1938,12 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    print(f"🔍 FMP request: {url} with params: {params}")
+                    debug_msg = f"🔍 **FMP Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
+                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
-                        print(f"🔍 FMP response status: {response.status}")
-                        print(f"🔍 FMP response: {response_text[:500]}...")
+                        response_debug = f"🔍 **FMP Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
+                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
