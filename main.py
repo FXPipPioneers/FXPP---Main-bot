@@ -1794,24 +1794,24 @@ class TradingBot(commands.Bot):
         # Symbol mapping for each API - indices have different names across APIs
         symbol_mappings = {
             "fxapi": {
-                "US100": "NASDAQ",  # FXApi uses NASDAQ for Nasdaq 100
-                "GER40": "DAX",     # FXApi uses DAX for German index
-                "GER30": "DAX",     # Alternative name for German index
-                "NAS100": "NASDAQ", # Alternative name for Nasdaq
-                "US500": "SPX",     # S&P 500
-                "UK100": "UKX",     # FTSE 100
-                "JPN225": "NKY",    # Nikkei 225
-                "AUS200": "ASX"     # ASX 200
+                "US100": "US100",   # FXApi actually uses US100 directly
+                "GER40": "GER40",   # FXApi uses GER40 directly  
+                "GER30": "GER30",   # GER30 directly
+                "NAS100": "US100",  # Alternative name for US100
+                "US500": "US500",   # S&P 500
+                "UK100": "UK100",   # FTSE 100
+                "JPN225": "JPN225", # Nikkei 225
+                "AUS200": "AUS200"  # ASX 200
             },
             "twelve_data": {
-                "US100": "IXIC",    # Twelve Data uses IXIC for Nasdaq Composite
-                "GER40": "GDAXI",   # German index symbol
-                "GER30": "GDAXI",   # Alternative name
-                "NAS100": "IXIC",   # Alternative name
+                "US100": "NDX",     # Twelve Data uses NDX for Nasdaq 100
+                "GER40": "DAX",     # German DAX index
+                "GER30": "DAX",     # Alternative name
+                "NAS100": "NDX",    # Alternative name for Nasdaq 100
                 "US500": "SPX",     # S&P 500
                 "UK100": "UKX",     # FTSE 100
                 "JPN225": "N225",   # Nikkei 225
-                "AUS200": "AXJO"    # ASX 200
+                "AUS200": "XJO"     # ASX 200
             },
             "alpha_vantage": {
                 # Alpha Vantage doesn't support indices through currency exchange rate
@@ -1819,12 +1819,12 @@ class TradingBot(commands.Bot):
                 # We'll skip Alpha Vantage for indices
             },
             "fmp": {
-                "US100": "^IXIC",   # FMP uses ^IXIC for Nasdaq
-                "GER40": "^GDAXI",  # German index
+                "US100": "^NDX",    # FMP uses ^NDX for Nasdaq 100
+                "GER40": "^GDAXI",  # German DAX index
                 "GER30": "^GDAXI",  # Alternative name
-                "NAS100": "^IXIC",  # Alternative name
-                "US500": "^GSPC",   # S&P 500
-                "UK100": "^FTSE",   # FTSE 100
+                "NAS100": "^NDX",   # Alternative name for Nasdaq 100
+                "US500": "^SPX",    # S&P 500
+                "UK100": "^UKX",    # FTSE 100
                 "JPN225": "^N225",  # Nikkei 225
                 "AUS200": "^AXJO"   # ASX 200
             }
