@@ -109,7 +109,7 @@ AUTO_ROLE_CONFIG = {
 }
 
 # Log channel ID for Discord logging
-LOG_CHANNEL_ID = 1350888185487429642
+LOG_CHANNEL_ID = 1412344974871105567
 
 # Gold Pioneer role ID for checking membership before sending follow-up DMs
 GOLD_PIONEER_ROLE_ID = 1384489575187091466
