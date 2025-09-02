@@ -108,8 +108,11 @@ AUTO_ROLE_CONFIG = {
     }  # member_id: {"role_expired": datetime, "guild_id": guild_id, "dm_3_sent": bool, "dm_7_sent": bool, "dm_14_sent": bool}
 }
 
-# Log channel ID for Discord logging
-LOG_CHANNEL_ID = 1412344974871105567
+# Log channel ID for Discord logging (regular bot logs)
+LOG_CHANNEL_ID = 1350888185487429642
+
+# Debug channel ID for debugging messages only
+DEBUG_CHANNEL_ID = 1412344974871105567
 
 # Gold Pioneer role ID for checking membership before sending follow-up DMs
 GOLD_PIONEER_ROLE_ID = 1384489575187091466
@@ -194,7 +197,7 @@ class TradingBot(commands.Bot):
         self.last_heartbeat = None
 
     async def log_to_discord(self, message):
-        """Send log message to Discord channel"""
+        """Send regular log message to Discord channel"""
         if self.log_channel:
             try:
                 await self.log_channel.send(f"📋 **Bot Log:** {message}")
@@ -202,6 +205,16 @@ class TradingBot(commands.Bot):
                 print(f"Failed to send log to Discord: {e}")
         # Always print to console as backup
         print(message)
+    
+    async def debug_to_discord(self, message):
+        """Send debug message to Discord debug channel"""
+        if self.debug_channel:
+            try:
+                await self.debug_channel.send(f"🔍 **Debug:** {message}")
+            except Exception as e:
+                print(f"Failed to send debug to Discord: {e}")
+        # Always print to console as backup
+        print(f"DEBUG: {message}")
     
     async def close(self):
         """Cleanup when bot shuts down"""
@@ -582,12 +595,18 @@ class TradingBot(commands.Bot):
     @tasks.loop(seconds=225)  # Check every 3 minutes 45 seconds (3 min + 45s safety buffer) for optimal API usage
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - optimized for free API tiers"""
+        await self.debug_to_discord(f"🔄 **Price Tracking Task Running** - Checking active trades...")
+        
         if not PRICE_TRACKING_CONFIG["enabled"]:
+            await self.debug_to_discord("❌ **Price Tracking Disabled** - Task exiting")
             return
         
         # Get active trades from database for 24/7 persistence
         active_trades = await self.get_active_trades_from_db()
+        await self.debug_to_discord(f"📊 **Active Trades Found**: {len(active_trades)} trades in database")
+        
         if not active_trades:
+            await self.debug_to_discord("🚫 **No Active Trades** - Task completed (no trades to monitor)")
             return
         
         try:
@@ -595,14 +614,19 @@ class TradingBot(commands.Bot):
             trades_to_remove = []
             for message_id, trade_data in list(active_trades.items()):
                 try:
+                    await self.debug_to_discord(f"🔍 **Checking Trade**: {trade_data['pair']} ({trade_data['action']}) - ID: {message_id}")
+                    
                     # Check if price levels have been hit
                     level_hit = await self.check_price_levels(message_id, trade_data)
                     if level_hit:
+                        await self.debug_to_discord(f"✅ **Level Hit Detected** for {trade_data['pair']} - Handler called")
                         # Trade was closed, will be removed by the handler
                         continue
+                    else:
+                        await self.debug_to_discord(f"🟡 **No Level Hit** for {trade_data['pair']} - Continuing to monitor")
                         
                 except Exception as e:
-                    print(f"Error checking price for trade {message_id}: {e}")
+                    await self.debug_to_discord(f"❌ **Price Check Error** for trade {message_id}: {e}")
                     trades_to_remove.append(message_id)
             
             # Remove failed trades from database
@@ -611,6 +635,7 @@ class TradingBot(commands.Bot):
                 print(f"Removed failed trade {message_id} from tracking")
                     
         except Exception as e:
+            await self.debug_to_discord(f"❌ **Price Tracking Loop Error**: {e}")
             print(f"Error in price tracking loop: {e}")
 
     @tasks.loop(minutes=30)
@@ -1031,16 +1056,26 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
+            await self.debug_to_discord("🚀 **Price Tracking Task Started** - 24/7 monitoring active (checks every 225 seconds)")
+        else:
+            await self.debug_to_discord("✅ **Price Tracking Task Already Running** - Background monitoring continues")
 
         # Database initialization is now handled in setup_hook
 
         # Set up Discord logging channel
         self.log_channel = self.get_channel(LOG_CHANNEL_ID)
+        self.debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
+        
         if self.log_channel:
             await self.log_to_discord(
                 "🚀 **TradingBot Started** - All systems operational!")
         else:
             print(f"⚠️ Log channel {LOG_CHANNEL_ID} not found")
+            
+        if self.debug_channel:
+            await self.debug_to_discord("🔧 **Debug Channel Ready** - Debugging enabled!")
+        else:
+            print(f"⚠️ Debug channel {DEBUG_CHANNEL_ID} not found")
 
         # Cache invites for all guilds to track bot invite usage
         for guild in self.guilds:
@@ -1378,6 +1413,11 @@ class TradingBot(commands.Bot):
             (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot) and
             PRICE_TRACKING_CONFIG["signal_keyword"] in message.content):
             
+            await self.debug_to_discord(f"📨 **Signal Detected** from {message.author.display_name} (ID: {message.author.id})\nChannel: {message.channel.name} (ID: {message.channel.id})\nContent: {message.content[:200]}...")
+            
+            # Show signal format requirements
+            await self.debug_to_discord("📝 **Expected Signal Format**:\n```\nTrade Signal For: PAIR\nEntry Type: Buy execution (or Sell limit)\nEntry Price: $1234.56\nTake Profit 1: $1234.56\nTake Profit 2: $1234.56\nTake Profit 3: $1234.56\nStop Loss: $1234.56\n```")
+            
             try:
                 # Parse the signal message
                 trade_data = self.parse_signal_message(message.content)
@@ -1418,11 +1458,11 @@ class TradingBot(commands.Bot):
                     # Add to active trades with database persistence
                     await self.save_trade_to_db(str(message.id), trade_data)
                     
-                    print(f"✅ Started tracking signal for {trade_data['pair']} ({trade_data['action']}) - Message ID: {message.id}")
+                    await self.debug_to_discord(f"✅ **Signal Tracking Started**\nPair: {trade_data['pair']} ({trade_data['action']})\nMessage ID: {message.id}\nEntry: {trade_data['entry']}\nTP1: {trade_data['tp1']} | TP2: {trade_data['tp2']} | TP3: {trade_data['tp3']}\nSL: {trade_data['sl']}")
                 else:
-                    print(f"❌ Could not parse signal from message: {message.content[:100]}...")
+                    await self.debug_to_discord(f"❌ **Signal Parsing Failed**\nMessage content: {message.content[:200]}...\nPossible issues: Missing required fields or format mismatch")
             except Exception as e:
-                print(f"Error processing signal message: {e}")
+                await self.debug_to_discord(f"❌ **Signal Processing Error**: {e}\nMessage: {message.content[:100]}...")
         
         # Process message for level system
         await self.process_message_for_levels(message)
@@ -1800,7 +1840,7 @@ class TradingBot(commands.Bot):
                 # Price successfully retrieved, no debugging needed
                 return price
         
-        await self.log_to_discord(f"⚠️ **Primary APIs failed** for {pair_clean}, trying all APIs as fallback")
+        await self.debug_to_discord(f"⚠️ **Primary APIs failed** for {pair_clean}, trying all APIs as fallback")
         return await self.get_verified_price_all_apis(pair_clean)
     
     def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
@@ -2123,7 +2163,7 @@ class TradingBot(commands.Bot):
             return price
     
     async def log_api_limit_warning(self, api_name: str, message: str):
-        """Log API limit warnings to Discord and console"""
+        """Log API limit warnings to Discord debug channel and console"""
         warning_msg = f"🚨 **{api_name} API Limit Warning**\n{message}\n\n" + \
                      f"**Action Required:**\n" + \
                      f"• Check your {api_name} dashboard for usage details\n" + \
@@ -2131,7 +2171,7 @@ class TradingBot(commands.Bot):
                      f"• Bot will continue using other API sources\n\n" + \
                      f"**Impact:** Price tracking accuracy may be reduced if multiple APIs are limited."
         
-        await self.log_to_discord(warning_msg)
+        await self.debug_to_discord(warning_msg)
         print(f"API LIMIT WARNING: {api_name} - {message}")
 
     def parse_signal_message(self, content: str) -> Optional[Dict]:
