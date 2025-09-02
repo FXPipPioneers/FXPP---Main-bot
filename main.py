@@ -762,6 +762,7 @@ class TradingBot(commands.Bot):
                         guild_id BIGINT NOT NULL,
                         pair VARCHAR(20) NOT NULL,
                         action VARCHAR(10) NOT NULL,
+                        entry_type VARCHAR(20) DEFAULT 'execution',
                         entry_price DECIMAL(12,8) NOT NULL,
                         tp1_price DECIMAL(12,8) NOT NULL,
                         tp2_price DECIMAL(12,8) NOT NULL,
@@ -776,10 +777,22 @@ class TradingBot(commands.Bot):
                         status VARCHAR(50) DEFAULT 'active',
                         tp_hits TEXT DEFAULT '',
                         breakeven_active BOOLEAN DEFAULT FALSE,
+                        limit_activated BOOLEAN DEFAULT FALSE,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
                 ''')
+                
+                # Add new columns to existing table if they don't exist
+                try:
+                    await conn.execute('''
+                        ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS entry_type VARCHAR(20) DEFAULT 'execution'
+                    ''')
+                    await conn.execute('''
+                        ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS limit_activated BOOLEAN DEFAULT FALSE
+                    ''')
+                except Exception as e:
+                    print(f"Note: Columns may already exist: {e}")
 
             print("✅ Database tables initialized")
 
@@ -1603,6 +1616,7 @@ class TradingBot(commands.Bot):
                     trade_data = {
                         "pair": row['pair'],
                         "action": row['action'],
+                        "entry_type": row.get('entry_type', 'execution'),
                         "entry": float(row['entry_price']),
                         "tp1": float(row['tp1_price']),
                         "tp2": float(row['tp2_price']),
@@ -1617,6 +1631,7 @@ class TradingBot(commands.Bot):
                         "status": row['status'],
                         "tp_hits": row['tp_hits'].split(',') if row['tp_hits'] else [],
                         "breakeven_active": row['breakeven_active'],
+                        "limit_activated": row.get('limit_activated', False),
                         "channel_id": row['channel_id'],
                         "guild_id": row['guild_id'],
                         "message_id": row['message_id'],
@@ -1646,19 +1661,19 @@ class TradingBot(commands.Bot):
             async with self.db_pool.acquire() as conn:
                 await conn.execute('''
                     INSERT INTO active_trades (
-                        message_id, channel_id, guild_id, pair, action,
+                        message_id, channel_id, guild_id, pair, action, entry_type,
                         entry_price, tp1_price, tp2_price, tp3_price, sl_price,
                         discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
-                        live_entry, status, tp_hits, breakeven_active
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                        live_entry, status, tp_hits, breakeven_active, limit_activated
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                 ''', 
                 message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
-                trade_data["pair"], trade_data["action"], 
+                trade_data["pair"], trade_data["action"], trade_data.get("entry_type", "execution"),
                 trade_data["entry"], trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"],
                 trade_data.get("discord_entry"), trade_data.get("discord_tp1"), trade_data.get("discord_tp2"), 
                 trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
                 trade_data.get("live_entry"), trade_data.get("status", "active"),
-                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False), trade_data.get("limit_activated", False)
                 )
                 
                 # Also update in-memory for fast access
@@ -1676,11 +1691,11 @@ class TradingBot(commands.Bot):
             async with self.db_pool.acquire() as conn:
                 await conn.execute('''
                     UPDATE active_trades SET 
-                        status = $2, tp_hits = $3, breakeven_active = $4, last_updated = NOW()
+                        status = $2, tp_hits = $3, breakeven_active = $4, limit_activated = $5, last_updated = NOW()
                     WHERE message_id = $1
                 ''', 
                 message_id, trade_data.get("status", "active"),
-                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False), trade_data.get("limit_activated", False)
                 )
                 
                 # Also update in-memory
@@ -1794,21 +1809,15 @@ class TradingBot(commands.Bot):
         # Let's try multiple variations for each API to find what works
         symbol_mappings = {
             "fxapi": {
-                "US100": ["NASDAQ", "QQQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF tracks Nasdaq 100)
-                "GER40": ["GDAXI", "DE40", "FDAX", "GER40"],     # German DAX alternatives (GDAXI is correct DAX)  
                 "GER30": ["GDAXI", "DE30", "FDAX", "GER30"],     # German DAX alternatives
                 "NAS100": ["NASDAQ", "QQQ", "USTEC", "NQ"],      # Alternative name for US100
-                "US500": ["US500", "SPX", "SPY"],               # S&P 500
                 "UK100": ["UK100", "UKX", "FTSE"],              # FTSE 100
                 "JPN225": ["JPN225", "N225", "NKY"],             # Nikkei 225
                 "AUS200": ["AUS200", "ASX", "XJO"]               # ASX 200
             },
             "twelve_data": {
-                "US100": ["QQQ", "NASDAQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF available on free tier)
-                "GER40": ["GDAXI", "FDAX", "DAX30", "DE40"],     # German DAX alternatives (GDAXI should give correct ~24051 price)
                 "GER30": ["GDAXI", "FDAX", "DAX30", "DE30"],     # German DAX alternatives
                 "NAS100": ["QQQ", "NASDAQ", "USTEC", "NQ"],      # Alternative name for Nasdaq 100
-                "US500": ["SPX", "GSPC"],                       # S&P 500
                 "UK100": ["UKX", "FTSE"],                       # FTSE 100
                 "JPN225": ["N225", "NKY"],                      # Nikkei 225
                 "AUS200": ["XJO", "AXJO"]                       # ASX 200
@@ -1819,11 +1828,8 @@ class TradingBot(commands.Bot):
                 # We'll skip Alpha Vantage for indices
             },
             "fmp": {
-                "US100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],       # Nasdaq 100 ETF and index symbols
-                "GER40": ["^GDAXI", "EXS1", "DAXEX", "FDAX"],   # German DAX alternatives (^GDAXI should give correct price)
                 "GER30": ["^GDAXI", "EXS1", "DAXEX", "FDAX"],   # German DAX alternatives
                 "NAS100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],      # Alternative name for Nasdaq 100
-                "US500": ["^SPX", "^GSPC"],                    # S&P 500
                 "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
                 "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
                 "AUS200": ["^AXJO", "^XJO"]                    # ASX 200
@@ -1851,7 +1857,7 @@ class TradingBot(commands.Bot):
             api_symbol = self.get_api_symbol(api_name, pair_clean)
             
             # Skip Alpha Vantage for indices (it doesn't support them via currency exchange)
-            if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]:
+            if api_name == "alpha_vantage" and pair_clean in ["GER30", "NAS100", "UK100", "JPN225", "AUS200"]:
                 print(f"⏭️ Skipping Alpha Vantage for index {pair_clean} (not supported)")
                 return None
             if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
@@ -2148,6 +2154,7 @@ class TradingBot(commands.Bot):
             trade_data = {
                 "pair": None,
                 "action": None,
+                "entry_type": None,
                 "entry": None,
                 "tp1": None,
                 "tp2": None,
@@ -2155,7 +2162,8 @@ class TradingBot(commands.Bot):
                 "sl": None,
                 "status": "active",
                 "tp_hits": [],
-                "breakeven_active": False
+                "breakeven_active": False,
+                "limit_activated": False
             }
             
             # Find pair from "Trade Signal For: PAIR"
@@ -2166,19 +2174,27 @@ class TradingBot(commands.Bot):
                         trade_data["pair"] = parts[1].strip()
                         break
             
-            # Extract action from "Entry Type: Buy execution" or "Entry Type: Sell execution"
-            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
+            # Extract action and entry type from "Entry Type: Buy execution" or "Entry Type: Sell limit"
+            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)\s*(execution|limit)', content, re.IGNORECASE)
             if entry_type_match:
                 trade_data["action"] = entry_type_match.group(1).upper()
+                trade_data["entry_type"] = entry_type_match.group(2).lower()
             else:
-                # Fallback to old format detection
-                for line in lines:
-                    if "BUY" in line.upper() or "SELL" in line.upper():
-                        if "BUY" in line.upper():
-                            trade_data["action"] = "BUY"
-                        else:
-                            trade_data["action"] = "SELL"
-                        break
+                # Try to match just the action without execution/limit
+                action_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
+                if action_match:
+                    trade_data["action"] = action_match.group(1).upper()
+                    trade_data["entry_type"] = "execution"  # Default to execution if not specified
+                else:
+                    # Fallback to old format detection
+                    for line in lines:
+                        if "BUY" in line.upper() or "SELL" in line.upper():
+                            if "BUY" in line.upper():
+                                trade_data["action"] = "BUY"
+                            else:
+                                trade_data["action"] = "SELL"
+                            trade_data["entry_type"] = "execution"  # Default to execution for old format
+                            break
             
             # Extract entry price from "Entry Price: $3473.50" (handles $ symbol)
             entry_match = re.search(r'Entry Price:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
@@ -2259,6 +2275,19 @@ class TradingBot(commands.Bot):
             
             action = trade_data["action"]
             entry = trade_data["entry"]
+            entry_type = trade_data.get("entry_type", "execution")
+            
+            # Check for limit activation first (only for limit orders that haven't been activated yet)
+            if entry_type == "limit" and not trade_data.get("limit_activated", False):
+                limit_hit = False
+                if action == "BUY" and current_price <= entry:
+                    limit_hit = True
+                elif action == "SELL" and current_price >= entry:
+                    limit_hit = True
+                
+                if limit_hit:
+                    await self.handle_limit_activation(message_id, trade_data)
+                    return False  # Continue tracking after activation, don't close trade
             
             # Determine if we should check breakeven (after TP2 hit)
             if trade_data["breakeven_active"]:
@@ -2362,6 +2391,22 @@ class TradingBot(commands.Bot):
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
 
+    async def handle_limit_activation(self, message_id: str, trade_data: Dict):
+        """Handle when a limit order is activated (entry price hit)"""
+        try:
+            # Update trade data to mark limit as activated
+            trade_data["limit_activated"] = True
+            trade_data["status"] = f"active ({trade_data['entry_type']} activated)"
+            
+            # Update in database
+            await self.update_trade_in_db(message_id, trade_data)
+            
+            # Send activation notification
+            await self.send_limit_activation_notification(message_id, trade_data)
+            
+        except Exception as e:
+            print(f"Error handling limit activation: {e}")
+
     async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str):
         """Send TP hit notification with random message selection"""
         import random
@@ -2461,6 +2506,24 @@ class TradingBot(commands.Bot):
             
         except Exception as e:
             print(f"Error sending breakeven notification: {e}")
+
+    async def send_limit_activation_notification(self, message_id: str, trade_data: Dict):
+        """Send limit activation notification to original trade signal message"""
+        try:
+            # Get the original message to reply to
+            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
+            
+            # Create activation notification based on action type
+            action_type = trade_data["action"].lower()  # buy or sell
+            notification = f"@everyone our {action_type} limit has been activated :white_check_mark:"
+            
+            # Reply to the original trade signal message
+            await message.reply(notification)
+            
+            print(f"✅ Sent limit activation notification for {trade_data['pair']} {action_type} limit")
+            
+        except Exception as e:
+            print(f"Error sending limit activation notification: {e}")
 
     async def track_member_join_via_invite(self, member, invite_code):
         """Track a member joining via specific invite"""
@@ -2965,18 +3028,6 @@ PAIR_CONFIG = {
         'decimals': 4,
         'pip_value': 0.0001
     },
-    'US100': {
-        'decimals': 1,
-        'pip_value': 1.0
-    },
-    'US500': {
-        'decimals': 2,
-        'pip_value': 0.1
-    },
-    'GER40': {
-        'decimals': 1,
-        'pip_value': 1.0
-    },  # Same as US100
     'BTCUSD': {
         'decimals': 1,
         'pip_value': 10
@@ -5026,12 +5077,21 @@ async def active_trades(interaction: discord.Interaction):
             if trade_data.get("breakeven_active"):
                 breakeven_status = "\n🔄 **Breakeven SL Active** (TP2 hit)"
             
+            # Limit activation status
+            limit_status = ""
+            entry_type = trade_data.get("entry_type", "execution")
+            if entry_type == "limit":
+                if trade_data.get("limit_activated", False):
+                    limit_status = f"\n✅ **{trade_data['action'].title()} Limit Activated**"
+                else:
+                    limit_status = f"\n⏳ **{trade_data['action'].title()} Limit Pending** (waiting for entry price)"
+            
             # Time tracking
             time_status = f"\n⏱️ Message: {message_id[:8]}..."
             
             embed.add_field(
-                name=f"📈 {trade_data['pair']} - {trade_data['action']}",
-                value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{time_status}",
+                name=f"📈 {trade_data['pair']} - {trade_data['action']} {entry_type.title()}",
+                value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{limit_status}{time_status}",
                 inline=False
             )
             
