@@ -8,7 +8,14 @@ This project is a professional Discord bot designed for trading signal distribut
 - Bot owner restricted to Discord ID: 462707111365836801
 - TP/SL calculations updated: TP1=20 pips, TP2=40 pips, TP3=70 pips, SL=50 pips (changed from TP2=50, TP3=100, SL=70)
 
-## Recent Changes (September 1, 2025)
+## Recent Changes (September 2, 2025)
+- **SYMBOL EXCLUSION**: Removed US100, US500, and GER40 from price tracking and /pricetest command as these pairs are no longer supported
+- **LIMIT ORDER TRACKING**: Added sophisticated buy/sell limit vs execution detection - bot now distinguishes between limit orders and immediate executions
+- **AUTOMATIC LIMIT ACTIVATION ALERTS**: When limit orders are triggered, bot automatically responds to the original trade signal with "@everyone our [buy/sell] limit has been activated :white_check_mark:"
+- **ENHANCED ACTIVETRADES DISPLAY**: Updated /activetrades command to show limit activation status - displays whether limits are activated or still pending
+- **CLEANER OPERATION**: Removed unnecessary debugging messages that appeared during successful price retrieval - debugging now only shows for errors or failures
+
+## Previous Changes (September 1, 2025)
 - **24/7 PERSISTENT TRADE TRACKING**: Implemented PostgreSQL database storage for all active trading signals, ensuring trades persist through bot restarts, updates, and downtime
 - **AUTOMATIC PRICE TRACKING**: Price tracking is now enabled by default and runs 24/7 without manual activation
 - **DATABASE-DRIVEN OPERATIONS**: All trade operations (add, update, remove) now use PostgreSQL for complete persistence and data integrity

@@ -1406,8 +1406,7 @@ class TradingBot(commands.Bot):
                         trade_data["tp3"] = live_levels["tp3"]
                         trade_data["sl"] = live_levels["sl"]
                         
-                        print(f"✅ Signal tracking: Discord entry ${trade_data['discord_entry']}, Live entry ${live_price}")
-                        print(f"   Tracking TP/SL based on live price: TP1=${trade_data['tp1']}, SL=${trade_data['sl']}")
+                        # Signal tracking initiated successfully
                     else:
                         print(f"⚠️ Could not get live price for {trade_data['pair']}, using Discord prices for tracking")
                     
@@ -1798,7 +1797,7 @@ class TradingBot(commands.Bot):
             if price is not None:
                 # Update rotation for next check
                 PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
-                await self.log_to_discord(f"✅ **SUCCESS:** Price from {api_name} for {pair_clean}: ${price:.5f}")
+                # Price successfully retrieved, no debugging needed
                 return price
         
         await self.log_to_discord(f"⚠️ **Primary APIs failed** for {pair_clean}, trying all APIs as fallback")
@@ -1841,10 +1840,10 @@ class TradingBot(commands.Bot):
             symbol_list = symbol_mappings[api_name][pair_clean]
             if isinstance(symbol_list, list) and symbol_list:
                 mapped_symbol = symbol_list[0]  # Use first symbol for now
-                print(f"🔄 Mapping {pair_clean} → {mapped_symbol} for {api_name} (from options: {symbol_list})")
+                # Symbol mapped successfully
                 return mapped_symbol
             elif isinstance(symbol_list, str):
-                print(f"🔄 Mapping {pair_clean} → {symbol_list} for {api_name}")
+                # Symbol mapped successfully
                 return symbol_list
         
         # Return original symbol if no mapping found
@@ -1868,17 +1867,13 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    debug_msg = f"🔍 **FXApi Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
-                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
-                        response_debug = f"🔍 **FXApi Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
-                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and api_symbol in data["rates"]:
                                 price = float(data["rates"][api_symbol])
-                                print(f"✅ FXApi found price for {api_symbol}: {price}")
+                                # Price found successfully
                                 return price
                             else:
                                 print(f"❌ FXApi: Symbol {api_symbol} not found in rates. Available symbols: {list(data.get('rates', {}).keys())[:10]}...")
@@ -1895,17 +1890,13 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    debug_msg = f"🔍 **Twelve Data Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
-                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
-                        response_debug = f"🔍 **Twelve Data Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
-                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
                                 price = float(data["price"])
-                                print(f"✅ Twelve Data found price for {api_symbol}: {price}")
+                                # Price found successfully
                                 return price
                             elif "message" in data and "limit" in data["message"].lower():
                                 print(f"❌ Twelve Data: Usage limit reached. Data: {data}")
@@ -1944,17 +1935,13 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
-                    debug_msg = f"🔍 **FMP Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
-                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
-                        response_debug = f"🔍 **FMP Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
-                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
                                 price = float(data[0]["price"])
-                                print(f"✅ FMP found price for {api_symbol}: {price}")
+                                # Price found successfully
                                 return price
                             elif isinstance(data, dict) and "Error Message" in data:
                                 print(f"❌ FMP: Error message received. Data: {data}")
@@ -2244,15 +2231,12 @@ class TradingBot(commands.Bot):
                 if sl_match:
                     trade_data["sl"] = float(sl_match.group(1))
             
-            # Debug logging to help troubleshoot parsing issues
-            print(f"🔍 Parsing signal content: {content[:100]}...")
-            print(f"   Extracted - Pair: {trade_data['pair']}, Action: {trade_data['action']}")
-            print(f"   Extracted - Entry: {trade_data['entry']}, TP1: {trade_data['tp1']}, TP2: {trade_data['tp2']}, TP3: {trade_data['tp3']}, SL: {trade_data['sl']}")
+            # Debug logging only for troubleshooting - removed for clean operation
             
             # Validate required fields
             if all([trade_data["pair"], trade_data["action"], trade_data["entry"], 
                    trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"]]):
-                print(f"✅ Successfully parsed signal for {trade_data['pair']} ({trade_data['action']})")
+                # Signal parsed successfully
                 return trade_data
             else:
                 missing_fields = []
