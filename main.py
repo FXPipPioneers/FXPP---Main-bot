@@ -108,11 +108,8 @@ AUTO_ROLE_CONFIG = {
     }  # member_id: {"role_expired": datetime, "guild_id": guild_id, "dm_3_sent": bool, "dm_7_sent": bool, "dm_14_sent": bool}
 }
 
-# Log channel ID for Discord logging (regular bot logs)
+# Log channel ID for Discord logging
 LOG_CHANNEL_ID = 1350888185487429642
-
-# Debug channel ID for debugging messages only
-DEBUG_CHANNEL_ID = 1412344974871105567
 
 # Gold Pioneer role ID for checking membership before sending follow-up DMs
 GOLD_PIONEER_ROLE_ID = 1384489575187091466
@@ -197,7 +194,7 @@ class TradingBot(commands.Bot):
         self.last_heartbeat = None
 
     async def log_to_discord(self, message):
-        """Send regular log message to Discord channel"""
+        """Send log message to Discord channel"""
         if self.log_channel:
             try:
                 await self.log_channel.send(f"📋 **Bot Log:** {message}")
@@ -205,16 +202,6 @@ class TradingBot(commands.Bot):
                 print(f"Failed to send log to Discord: {e}")
         # Always print to console as backup
         print(message)
-    
-    async def debug_to_discord(self, message):
-        """Send debug message to Discord debug channel"""
-        if self.debug_channel:
-            try:
-                await self.debug_channel.send(f"🔍 **Debug:** {message}")
-            except Exception as e:
-                print(f"Failed to send debug to Discord: {e}")
-        # Always print to console as backup
-        print(f"DEBUG: {message}")
     
     async def close(self):
         """Cleanup when bot shuts down"""
@@ -595,18 +582,12 @@ class TradingBot(commands.Bot):
     @tasks.loop(seconds=225)  # Check every 3 minutes 45 seconds (3 min + 45s safety buffer) for optimal API usage
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - optimized for free API tiers"""
-        await self.debug_to_discord(f"🔄 **Price Tracking Task Running** - Checking active trades...")
-        
         if not PRICE_TRACKING_CONFIG["enabled"]:
-            await self.debug_to_discord("❌ **Price Tracking Disabled** - Task exiting")
             return
         
         # Get active trades from database for 24/7 persistence
         active_trades = await self.get_active_trades_from_db()
-        await self.debug_to_discord(f"📊 **Active Trades Found**: {len(active_trades)} trades in database")
-        
         if not active_trades:
-            await self.debug_to_discord("🚫 **No Active Trades** - Task completed (no trades to monitor)")
             return
         
         try:
@@ -614,19 +595,14 @@ class TradingBot(commands.Bot):
             trades_to_remove = []
             for message_id, trade_data in list(active_trades.items()):
                 try:
-                    await self.debug_to_discord(f"🔍 **Checking Trade**: {trade_data['pair']} ({trade_data['action']}) - ID: {message_id}")
-                    
                     # Check if price levels have been hit
                     level_hit = await self.check_price_levels(message_id, trade_data)
                     if level_hit:
-                        await self.debug_to_discord(f"✅ **Level Hit Detected** for {trade_data['pair']} - Handler called")
                         # Trade was closed, will be removed by the handler
                         continue
-                    else:
-                        await self.debug_to_discord(f"🟡 **No Level Hit** for {trade_data['pair']} - Continuing to monitor")
                         
                 except Exception as e:
-                    await self.debug_to_discord(f"❌ **Price Check Error** for trade {message_id}: {e}")
+                    print(f"Error checking price for trade {message_id}: {e}")
                     trades_to_remove.append(message_id)
             
             # Remove failed trades from database
@@ -635,7 +611,6 @@ class TradingBot(commands.Bot):
                 print(f"Removed failed trade {message_id} from tracking")
                     
         except Exception as e:
-            await self.debug_to_discord(f"❌ **Price Tracking Loop Error**: {e}")
             print(f"Error in price tracking loop: {e}")
 
     @tasks.loop(minutes=30)
@@ -787,7 +762,6 @@ class TradingBot(commands.Bot):
                         guild_id BIGINT NOT NULL,
                         pair VARCHAR(20) NOT NULL,
                         action VARCHAR(10) NOT NULL,
-                        entry_type VARCHAR(20) DEFAULT 'execution',
                         entry_price DECIMAL(12,8) NOT NULL,
                         tp1_price DECIMAL(12,8) NOT NULL,
                         tp2_price DECIMAL(12,8) NOT NULL,
@@ -802,22 +776,10 @@ class TradingBot(commands.Bot):
                         status VARCHAR(50) DEFAULT 'active',
                         tp_hits TEXT DEFAULT '',
                         breakeven_active BOOLEAN DEFAULT FALSE,
-                        limit_activated BOOLEAN DEFAULT FALSE,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
                 ''')
-                
-                # Add new columns to existing table if they don't exist
-                try:
-                    await conn.execute('''
-                        ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS entry_type VARCHAR(20) DEFAULT 'execution'
-                    ''')
-                    await conn.execute('''
-                        ALTER TABLE active_trades ADD COLUMN IF NOT EXISTS limit_activated BOOLEAN DEFAULT FALSE
-                    ''')
-                except Exception as e:
-                    print(f"Note: Columns may already exist: {e}")
 
             print("✅ Database tables initialized")
 
@@ -1056,26 +1018,16 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
-            await self.debug_to_discord("🚀 **Price Tracking Task Started** - 24/7 monitoring active (checks every 225 seconds)")
-        else:
-            await self.debug_to_discord("✅ **Price Tracking Task Already Running** - Background monitoring continues")
 
         # Database initialization is now handled in setup_hook
 
         # Set up Discord logging channel
         self.log_channel = self.get_channel(LOG_CHANNEL_ID)
-        self.debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
-        
         if self.log_channel:
             await self.log_to_discord(
                 "🚀 **TradingBot Started** - All systems operational!")
         else:
             print(f"⚠️ Log channel {LOG_CHANNEL_ID} not found")
-            
-        if self.debug_channel:
-            await self.debug_to_discord("🔧 **Debug Channel Ready** - Debugging enabled!")
-        else:
-            print(f"⚠️ Debug channel {DEBUG_CHANNEL_ID} not found")
 
         # Cache invites for all guilds to track bot invite usage
         for guild in self.guilds:
@@ -1413,11 +1365,6 @@ class TradingBot(commands.Bot):
             (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot) and
             PRICE_TRACKING_CONFIG["signal_keyword"] in message.content):
             
-            await self.debug_to_discord(f"📨 **Signal Detected** from {message.author.display_name} (ID: {message.author.id})\nChannel: {message.channel.name} (ID: {message.channel.id})\nContent: {message.content[:200]}...")
-            
-            # Show signal format requirements
-            await self.debug_to_discord("📝 **Expected Signal Format**:\n```\nTrade Signal For: PAIR\nEntry Type: Buy execution (or Sell limit)\nEntry Price: $1234.56\nTake Profit 1: $1234.56\nTake Profit 2: $1234.56\nTake Profit 3: $1234.56\nStop Loss: $1234.56\n```")
-            
             try:
                 # Parse the signal message
                 trade_data = self.parse_signal_message(message.content)
@@ -1446,7 +1393,8 @@ class TradingBot(commands.Bot):
                         trade_data["tp3"] = live_levels["tp3"]
                         trade_data["sl"] = live_levels["sl"]
                         
-                        # Signal tracking initiated successfully
+                        print(f"✅ Signal tracking: Discord entry ${trade_data['discord_entry']}, Live entry ${live_price}")
+                        print(f"   Tracking TP/SL based on live price: TP1=${trade_data['tp1']}, SL=${trade_data['sl']}")
                     else:
                         print(f"⚠️ Could not get live price for {trade_data['pair']}, using Discord prices for tracking")
                     
@@ -1458,11 +1406,11 @@ class TradingBot(commands.Bot):
                     # Add to active trades with database persistence
                     await self.save_trade_to_db(str(message.id), trade_data)
                     
-                    await self.debug_to_discord(f"✅ **Signal Tracking Started**\nPair: {trade_data['pair']} ({trade_data['action']})\nMessage ID: {message.id}\nEntry: {trade_data['entry']}\nTP1: {trade_data['tp1']} | TP2: {trade_data['tp2']} | TP3: {trade_data['tp3']}\nSL: {trade_data['sl']}")
+                    print(f"✅ Started tracking signal for {trade_data['pair']} ({trade_data['action']}) - Message ID: {message.id}")
                 else:
-                    await self.debug_to_discord(f"❌ **Signal Parsing Failed**\nMessage content: {message.content[:200]}...\nPossible issues: Missing required fields or format mismatch")
+                    print(f"❌ Could not parse signal from message: {message.content[:100]}...")
             except Exception as e:
-                await self.debug_to_discord(f"❌ **Signal Processing Error**: {e}\nMessage: {message.content[:100]}...")
+                print(f"Error processing signal message: {e}")
         
         # Process message for level system
         await self.process_message_for_levels(message)
@@ -1655,7 +1603,6 @@ class TradingBot(commands.Bot):
                     trade_data = {
                         "pair": row['pair'],
                         "action": row['action'],
-                        "entry_type": row.get('entry_type', 'execution'),
                         "entry": float(row['entry_price']),
                         "tp1": float(row['tp1_price']),
                         "tp2": float(row['tp2_price']),
@@ -1670,7 +1617,6 @@ class TradingBot(commands.Bot):
                         "status": row['status'],
                         "tp_hits": row['tp_hits'].split(',') if row['tp_hits'] else [],
                         "breakeven_active": row['breakeven_active'],
-                        "limit_activated": row.get('limit_activated', False),
                         "channel_id": row['channel_id'],
                         "guild_id": row['guild_id'],
                         "message_id": row['message_id'],
@@ -1700,19 +1646,19 @@ class TradingBot(commands.Bot):
             async with self.db_pool.acquire() as conn:
                 await conn.execute('''
                     INSERT INTO active_trades (
-                        message_id, channel_id, guild_id, pair, action, entry_type,
+                        message_id, channel_id, guild_id, pair, action,
                         entry_price, tp1_price, tp2_price, tp3_price, sl_price,
                         discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
-                        live_entry, status, tp_hits, breakeven_active, limit_activated
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                        live_entry, status, tp_hits, breakeven_active
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
                 ''', 
                 message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
-                trade_data["pair"], trade_data["action"], trade_data.get("entry_type", "execution"),
+                trade_data["pair"], trade_data["action"], 
                 trade_data["entry"], trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"],
                 trade_data.get("discord_entry"), trade_data.get("discord_tp1"), trade_data.get("discord_tp2"), 
                 trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
                 trade_data.get("live_entry"), trade_data.get("status", "active"),
-                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False), trade_data.get("limit_activated", False)
+                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
                 )
                 
                 # Also update in-memory for fast access
@@ -1730,11 +1676,11 @@ class TradingBot(commands.Bot):
             async with self.db_pool.acquire() as conn:
                 await conn.execute('''
                     UPDATE active_trades SET 
-                        status = $2, tp_hits = $3, breakeven_active = $4, limit_activated = $5, last_updated = NOW()
+                        status = $2, tp_hits = $3, breakeven_active = $4, last_updated = NOW()
                     WHERE message_id = $1
                 ''', 
                 message_id, trade_data.get("status", "active"),
-                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False), trade_data.get("limit_activated", False)
+                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
                 )
                 
                 # Also update in-memory
@@ -1837,10 +1783,10 @@ class TradingBot(commands.Bot):
             if price is not None:
                 # Update rotation for next check
                 PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
-                # Price successfully retrieved, no debugging needed
+                await self.log_to_discord(f"✅ **SUCCESS:** Price from {api_name} for {pair_clean}: ${price:.5f}")
                 return price
         
-        await self.debug_to_discord(f"⚠️ **Primary APIs failed** for {pair_clean}, trying all APIs as fallback")
+        await self.log_to_discord(f"⚠️ **Primary APIs failed** for {pair_clean}, trying all APIs as fallback")
         return await self.get_verified_price_all_apis(pair_clean)
     
     def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
@@ -1848,15 +1794,21 @@ class TradingBot(commands.Bot):
         # Let's try multiple variations for each API to find what works
         symbol_mappings = {
             "fxapi": {
+                "US100": ["NASDAQ", "QQQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF tracks Nasdaq 100)
+                "GER40": ["GDAXI", "DE40", "FDAX", "GER40"],     # German DAX alternatives (GDAXI is correct DAX)  
                 "GER30": ["GDAXI", "DE30", "FDAX", "GER30"],     # German DAX alternatives
                 "NAS100": ["NASDAQ", "QQQ", "USTEC", "NQ"],      # Alternative name for US100
+                "US500": ["US500", "SPX", "SPY"],               # S&P 500
                 "UK100": ["UK100", "UKX", "FTSE"],              # FTSE 100
                 "JPN225": ["JPN225", "N225", "NKY"],             # Nikkei 225
                 "AUS200": ["AUS200", "ASX", "XJO"]               # ASX 200
             },
             "twelve_data": {
+                "US100": ["QQQ", "NASDAQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF available on free tier)
+                "GER40": ["GDAXI", "FDAX", "DAX30", "DE40"],     # German DAX alternatives (GDAXI should give correct ~24051 price)
                 "GER30": ["GDAXI", "FDAX", "DAX30", "DE30"],     # German DAX alternatives
                 "NAS100": ["QQQ", "NASDAQ", "USTEC", "NQ"],      # Alternative name for Nasdaq 100
+                "US500": ["SPX", "GSPC"],                       # S&P 500
                 "UK100": ["UKX", "FTSE"],                       # FTSE 100
                 "JPN225": ["N225", "NKY"],                      # Nikkei 225
                 "AUS200": ["XJO", "AXJO"]                       # ASX 200
@@ -1867,8 +1819,11 @@ class TradingBot(commands.Bot):
                 # We'll skip Alpha Vantage for indices
             },
             "fmp": {
+                "US100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],       # Nasdaq 100 ETF and index symbols
+                "GER40": ["^GDAXI", "EXS1", "DAXEX", "FDAX"],   # German DAX alternatives (^GDAXI should give correct price)
                 "GER30": ["^GDAXI", "EXS1", "DAXEX", "FDAX"],   # German DAX alternatives
                 "NAS100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],      # Alternative name for Nasdaq 100
+                "US500": ["^SPX", "^GSPC"],                    # S&P 500
                 "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
                 "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
                 "AUS200": ["^AXJO", "^XJO"]                    # ASX 200
@@ -1880,10 +1835,10 @@ class TradingBot(commands.Bot):
             symbol_list = symbol_mappings[api_name][pair_clean]
             if isinstance(symbol_list, list) and symbol_list:
                 mapped_symbol = symbol_list[0]  # Use first symbol for now
-                # Symbol mapped successfully
+                print(f"🔄 Mapping {pair_clean} → {mapped_symbol} for {api_name} (from options: {symbol_list})")
                 return mapped_symbol
             elif isinstance(symbol_list, str):
-                # Symbol mapped successfully
+                print(f"🔄 Mapping {pair_clean} → {symbol_list} for {api_name}")
                 return symbol_list
         
         # Return original symbol if no mapping found
@@ -1896,7 +1851,7 @@ class TradingBot(commands.Bot):
             api_symbol = self.get_api_symbol(api_name, pair_clean)
             
             # Skip Alpha Vantage for indices (it doesn't support them via currency exchange)
-            if api_name == "alpha_vantage" and pair_clean in ["GER30", "NAS100", "UK100", "JPN225", "AUS200"]:
+            if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]:
                 print(f"⏭️ Skipping Alpha Vantage for index {pair_clean} (not supported)")
                 return None
             if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
@@ -1907,13 +1862,17 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
+                    debug_msg = f"🔍 **FXApi Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
+                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
+                        response_debug = f"🔍 **FXApi Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
+                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if "rates" in data and api_symbol in data["rates"]:
                                 price = float(data["rates"][api_symbol])
-                                # Price found successfully
+                                print(f"✅ FXApi found price for {api_symbol}: {price}")
                                 return price
                             else:
                                 print(f"❌ FXApi: Symbol {api_symbol} not found in rates. Available symbols: {list(data.get('rates', {}).keys())[:10]}...")
@@ -1930,13 +1889,17 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
+                    debug_msg = f"🔍 **Twelve Data Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
+                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
+                        response_debug = f"🔍 **Twelve Data Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
+                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
                                 price = float(data["price"])
-                                # Price found successfully
+                                print(f"✅ Twelve Data found price for {api_symbol}: {price}")
                                 return price
                             elif "message" in data and "limit" in data["message"].lower():
                                 print(f"❌ Twelve Data: Usage limit reached. Data: {data}")
@@ -1975,13 +1938,17 @@ class TradingBot(commands.Bot):
                 }
                 
                 async with aiohttp.ClientSession() as session:
+                    debug_msg = f"🔍 **FMP Debug for {pair_clean}**\nRequest: {url}\nParams: {params}"
+                    await self.log_to_discord(debug_msg)
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         response_text = await response.text()
+                        response_debug = f"🔍 **FMP Response**\nStatus: {response.status}\nData: {response_text[:500]}..."
+                        await self.log_to_discord(response_debug)
                         if response.status == 200:
                             data = await response.json()
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
                                 price = float(data[0]["price"])
-                                # Price found successfully
+                                print(f"✅ FMP found price for {api_symbol}: {price}")
                                 return price
                             elif isinstance(data, dict) and "Error Message" in data:
                                 print(f"❌ FMP: Error message received. Data: {data}")
@@ -2163,7 +2130,7 @@ class TradingBot(commands.Bot):
             return price
     
     async def log_api_limit_warning(self, api_name: str, message: str):
-        """Log API limit warnings to Discord debug channel and console"""
+        """Log API limit warnings to Discord and console"""
         warning_msg = f"🚨 **{api_name} API Limit Warning**\n{message}\n\n" + \
                      f"**Action Required:**\n" + \
                      f"• Check your {api_name} dashboard for usage details\n" + \
@@ -2171,7 +2138,7 @@ class TradingBot(commands.Bot):
                      f"• Bot will continue using other API sources\n\n" + \
                      f"**Impact:** Price tracking accuracy may be reduced if multiple APIs are limited."
         
-        await self.debug_to_discord(warning_msg)
+        await self.log_to_discord(warning_msg)
         print(f"API LIMIT WARNING: {api_name} - {message}")
 
     def parse_signal_message(self, content: str) -> Optional[Dict]:
@@ -2181,7 +2148,6 @@ class TradingBot(commands.Bot):
             trade_data = {
                 "pair": None,
                 "action": None,
-                "entry_type": None,
                 "entry": None,
                 "tp1": None,
                 "tp2": None,
@@ -2189,8 +2155,7 @@ class TradingBot(commands.Bot):
                 "sl": None,
                 "status": "active",
                 "tp_hits": [],
-                "breakeven_active": False,
-                "limit_activated": False
+                "breakeven_active": False
             }
             
             # Find pair from "Trade Signal For: PAIR"
@@ -2201,27 +2166,19 @@ class TradingBot(commands.Bot):
                         trade_data["pair"] = parts[1].strip()
                         break
             
-            # Extract action and entry type from "Entry Type: Buy execution" or "Entry Type: Sell limit"
-            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)\s*(execution|limit)', content, re.IGNORECASE)
+            # Extract action from "Entry Type: Buy execution" or "Entry Type: Sell execution"
+            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
             if entry_type_match:
                 trade_data["action"] = entry_type_match.group(1).upper()
-                trade_data["entry_type"] = entry_type_match.group(2).lower()
             else:
-                # Try to match just the action without execution/limit
-                action_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
-                if action_match:
-                    trade_data["action"] = action_match.group(1).upper()
-                    trade_data["entry_type"] = "execution"  # Default to execution if not specified
-                else:
-                    # Fallback to old format detection
-                    for line in lines:
-                        if "BUY" in line.upper() or "SELL" in line.upper():
-                            if "BUY" in line.upper():
-                                trade_data["action"] = "BUY"
-                            else:
-                                trade_data["action"] = "SELL"
-                            trade_data["entry_type"] = "execution"  # Default to execution for old format
-                            break
+                # Fallback to old format detection
+                for line in lines:
+                    if "BUY" in line.upper() or "SELL" in line.upper():
+                        if "BUY" in line.upper():
+                            trade_data["action"] = "BUY"
+                        else:
+                            trade_data["action"] = "SELL"
+                        break
             
             # Extract entry price from "Entry Price: $3473.50" (handles $ symbol)
             entry_match = re.search(r'Entry Price:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
@@ -2271,12 +2228,15 @@ class TradingBot(commands.Bot):
                 if sl_match:
                     trade_data["sl"] = float(sl_match.group(1))
             
-            # Debug logging only for troubleshooting - removed for clean operation
+            # Debug logging to help troubleshoot parsing issues
+            print(f"🔍 Parsing signal content: {content[:100]}...")
+            print(f"   Extracted - Pair: {trade_data['pair']}, Action: {trade_data['action']}")
+            print(f"   Extracted - Entry: {trade_data['entry']}, TP1: {trade_data['tp1']}, TP2: {trade_data['tp2']}, TP3: {trade_data['tp3']}, SL: {trade_data['sl']}")
             
             # Validate required fields
             if all([trade_data["pair"], trade_data["action"], trade_data["entry"], 
                    trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"]]):
-                # Signal parsed successfully
+                print(f"✅ Successfully parsed signal for {trade_data['pair']} ({trade_data['action']})")
                 return trade_data
             else:
                 missing_fields = []
@@ -2299,19 +2259,6 @@ class TradingBot(commands.Bot):
             
             action = trade_data["action"]
             entry = trade_data["entry"]
-            entry_type = trade_data.get("entry_type", "execution")
-            
-            # Check for limit activation first (only for limit orders that haven't been activated yet)
-            if entry_type == "limit" and not trade_data.get("limit_activated", False):
-                limit_hit = False
-                if action == "BUY" and current_price <= entry:
-                    limit_hit = True
-                elif action == "SELL" and current_price >= entry:
-                    limit_hit = True
-                
-                if limit_hit:
-                    await self.handle_limit_activation(message_id, trade_data)
-                    return False  # Continue tracking after activation, don't close trade
             
             # Determine if we should check breakeven (after TP2 hit)
             if trade_data["breakeven_active"]:
@@ -2415,22 +2362,6 @@ class TradingBot(commands.Bot):
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
 
-    async def handle_limit_activation(self, message_id: str, trade_data: Dict):
-        """Handle when a limit order is activated (entry price hit)"""
-        try:
-            # Update trade data to mark limit as activated
-            trade_data["limit_activated"] = True
-            trade_data["status"] = f"active ({trade_data['entry_type']} activated)"
-            
-            # Update in database
-            await self.update_trade_in_db(message_id, trade_data)
-            
-            # Send activation notification
-            await self.send_limit_activation_notification(message_id, trade_data)
-            
-        except Exception as e:
-            print(f"Error handling limit activation: {e}")
-
     async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str):
         """Send TP hit notification with random message selection"""
         import random
@@ -2530,24 +2461,6 @@ class TradingBot(commands.Bot):
             
         except Exception as e:
             print(f"Error sending breakeven notification: {e}")
-
-    async def send_limit_activation_notification(self, message_id: str, trade_data: Dict):
-        """Send limit activation notification to original trade signal message"""
-        try:
-            # Get the original message to reply to
-            message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
-            
-            # Create activation notification based on action type
-            action_type = trade_data["action"].lower()  # buy or sell
-            notification = f"@everyone our {action_type} limit has been activated :white_check_mark:"
-            
-            # Reply to the original trade signal message
-            await message.reply(notification)
-            
-            print(f"✅ Sent limit activation notification for {trade_data['pair']} {action_type} limit")
-            
-        except Exception as e:
-            print(f"Error sending limit activation notification: {e}")
 
     async def track_member_join_via_invite(self, member, invite_code):
         """Track a member joining via specific invite"""
@@ -3052,6 +2965,18 @@ PAIR_CONFIG = {
         'decimals': 4,
         'pip_value': 0.0001
     },
+    'US100': {
+        'decimals': 1,
+        'pip_value': 1.0
+    },
+    'US500': {
+        'decimals': 2,
+        'pip_value': 0.1
+    },
+    'GER40': {
+        'decimals': 1,
+        'pip_value': 1.0
+    },  # Same as US100
     'BTCUSD': {
         'decimals': 1,
         'pip_value': 10
@@ -5101,21 +5026,12 @@ async def active_trades(interaction: discord.Interaction):
             if trade_data.get("breakeven_active"):
                 breakeven_status = "\n🔄 **Breakeven SL Active** (TP2 hit)"
             
-            # Limit activation status
-            limit_status = ""
-            entry_type = trade_data.get("entry_type", "execution")
-            if entry_type == "limit":
-                if trade_data.get("limit_activated", False):
-                    limit_status = f"\n✅ **{trade_data['action'].title()} Limit Activated**"
-                else:
-                    limit_status = f"\n⏳ **{trade_data['action'].title()} Limit Pending** (waiting for entry price)"
-            
             # Time tracking
             time_status = f"\n⏱️ Message: {message_id[:8]}..."
             
             embed.add_field(
-                name=f"📈 {trade_data['pair']} - {trade_data['action']} {entry_type.title()}",
-                value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{limit_status}{time_status}",
+                name=f"📈 {trade_data['pair']} - {trade_data['action']}",
+                value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{time_status}",
                 inline=False
             )
             
