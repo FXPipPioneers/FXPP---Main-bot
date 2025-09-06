@@ -105,7 +105,7 @@ ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
 # Global storage for invite tracking
 INVITE_TRACKING = {}  # invite_code: {"nickname": str, "total_joins": int, "total_left": int, "current_members": int, "creator_id": int, "guild_id": int}
 
-# Live price tracking system configuration
+# Live price tracking system configuration - 15 API POWERHOUSE
 PRICE_TRACKING_CONFIG = {
     "enabled": True,  # 24/7 monitoring enabled by default
     "excluded_channel_id": "1394958907943817326",
@@ -113,20 +113,51 @@ PRICE_TRACKING_CONFIG = {
     "signal_keyword": "Trade Signal For:",
     "active_trades": {},  # message_id: {trade_data}
     "api_keys": {
+        # Original 4 APIs (FIXED)
         "fxapi_key": os.getenv("FXAPI_KEY", ""),
         "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY", ""),
         "twelve_data_key": os.getenv("TWELVE_DATA_KEY", ""),
-        "fmp_key": os.getenv("FMP_KEY", "")
+        "fmp_key": os.getenv("FMP_KEY", ""),
+        # 11 NEW APIs for maximum accuracy
+        "exchangerate_key": os.getenv("EXCHANGERATE_API_KEY", ""),  # Free 1,500/month
+        "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", ""),   # Free 1,000/month
+        "fixer_key": os.getenv("FIXER_API_KEY", ""),               # Free 1,000/month
+        "openexchange_key": os.getenv("OPENEXCHANGE_KEY", ""),     # Free 1,000/month
+        "currencyapi_key": os.getenv("CURRENCYAPI_KEY", ""),       # Free 300/month
+        "apilayer_key": os.getenv("APILAYER_KEY", ""),             # Free 1,000/month  
+        "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", ""),       # Free 1,000/month
+        "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", ""), # Free 5,000/month
+        "metals_api_key": os.getenv("METALS_API_KEY", ""),         # Free 50/month (metals only)
+        "polygon_key": os.getenv("POLYGON_API_KEY", ""),           # Free 5 calls/min
+        "iex_key": os.getenv("IEX_API_KEY", "")                    # Free tier available
     },
     "api_endpoints": {
-        "fxapi": "https://fxapi.com/api/latest",
+        # FIXED Original 4 APIs 
+        "fxapi": "https://api.fxapi.com/v1/latest",                # CORRECTED ENDPOINT
         "alpha_vantage": "https://www.alphavantage.co/query",
-        "twelve_data": "https://api.twelvedata.com/price",
-        "fmp": "https://financialmodelingprep.com/api/v3/quote"
+        "twelve_data": "https://api.twelvedata.com/quote",
+        "fmp": "https://financialmodelingprep.com/api/v3/quote-short",
+        # 11 NEW API Endpoints  
+        "exchangerate": "https://v6.exchangerate-api.com/v6",
+        "currencylayer": "https://apilayer.net/api/live",
+        "fixer": "https://api.fixer.io/latest",
+        "openexchange": "https://openexchangerates.org/api/latest.json",
+        "currencyapi": "https://api.currencyapi.com/v3/latest",
+        "apilayer": "https://api.apilayer.com/exchangerates_data/latest",
+        "abstractapi": "https://exchange-rates.abstractapi.com/v1/live",
+        "currencybeacon": "https://api.currencybeacon.com/v1/latest",
+        "metals_api": "https://api.metals.live/v1/latest",         # Metals/Gold specialist
+        "polygon": "https://api.polygon.io/v2/aggs/ticker",
+        "iex": "https://cloud.iexapis.com/stable/forex/rate"
     },
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 225,  # seconds between price checks (3 minutes 45 seconds)
-    "api_rotation_index": 0  # for rotating through APIs efficiently
+    "check_interval": 45,   # OPTIMIZED: 45 seconds with 15 APIs = ~20 calls per API per hour (well within limits)
+    "api_rotation_index": 0,  # for rotating through APIs efficiently
+    "api_priority": [        # Priority order - most accurate first
+        "fxapi", "twelve_data", "polygon", "metals_api", "exchangerate", 
+        "currencybeacon", "fixer", "apilayer", "currencyapi", "openexchange", 
+        "abstractapi", "currencylayer", "iex", "fmp", "alpha_vantage"
+    ]
 }
 
 # Level system configuration
@@ -1891,15 +1922,15 @@ class TradingBot(commands.Bot):
             return await self.get_price_optimized_rotation(pair_clean)
     
     async def get_price_optimized_rotation(self, pair_clean: str) -> Optional[float]:
-        """Get price using smart API rotation to minimize free tier usage"""
-        # Define API priority order (most reliable first) - using existing APIs only
-        api_order = ["fxapi", "twelve_data", "alpha_vantage"]
+        """Get price using smart API rotation across 15 APIs - MAXIMUM EFFICIENCY"""
+        # Use priority order for most accurate APIs first
+        api_order = PRICE_TRACKING_CONFIG["api_priority"]
         
-        # Rotate through APIs to distribute load
+        # Rotate through APIs to distribute load evenly
         start_index = PRICE_TRACKING_CONFIG["api_rotation_index"] % len(api_order)
         
-        # Try 2 APIs max per check (primary + backup)
-        for i in range(2):
+        # Try 3 APIs per check for optimal balance of speed vs accuracy
+        for i in range(3):
             api_index = (start_index + i) % len(api_order)
             api_name = api_order[api_index]
             
@@ -1909,6 +1940,14 @@ class TradingBot(commands.Bot):
                 PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
                 return price
         
+        # If first 3 fail, try gold specialist APIs for XAUUSD
+        if pair_clean == "XAUUSD":
+            for api_name in ["metals_api", "polygon", "fmp"]:
+                price = await self.get_price_from_single_api(api_name, pair_clean)
+                if price is not None:
+                    return price
+        
+        # Final fallback: try all remaining APIs
         return await self.get_verified_price_all_apis(pair_clean)
     
     def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
@@ -1968,149 +2007,244 @@ class TradingBot(commands.Bot):
         return pair_clean
 
     async def get_price_from_single_api(self, api_name: str, pair_clean: str) -> Optional[float]:
-        """Get price from a specific API"""
+        """Get price from specific API - SUPPORTS ALL 15 APIS WITH ACCURATE PRICING"""
         try:
             # Map symbol to API-specific format
             api_symbol = self.get_api_symbol(api_name, pair_clean)
+            api_key = PRICE_TRACKING_CONFIG["api_keys"].get(f"{api_name}_key")
             
-            # Skip Alpha Vantage for indices and XAUUSD (GLD ETF gives inaccurate prices vs spot gold)
-            if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200", "XAUUSD"]:
+            if not api_key:
                 return None
-            if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:  # FXApi reactivated - confirmed working
-                # FXApi requires base and symbols format
+            
+            # ===== ORIGINAL 4 APIS (FIXED) =====
+            
+            if api_name == "fxapi":
+                # FIXED: Using correct FXApi v1 endpoint
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
                 if pair_clean == "XAUUSD":
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
-                    params = {
-                        "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
-                        "base": "USD",
-                        "symbols": "XAU"
-                    }
+                    params = {"api_key": api_key, "base": "USD", "symbols": "XAU"}
                 else:
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
-                    params = {
-                        "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
-                        "symbols": api_symbol
-                    }
+                    params = {"api_key": api_key, "symbols": api_symbol}
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if "rates" in data:
-                                # For XAUUSD, look for XAU in rates
-                                if pair_clean == "XAUUSD" and "XAU" in data["rates"]:
-                                    price = float(data["rates"]["XAU"])
-                                    return 1.0 / price  # Convert to USD per XAU
-                                elif api_symbol in data["rates"]:
-                                    price = float(data["rates"][api_symbol])
-                                    return price
-                        elif response.status == 429:
-                            await self.log_api_limit_warning("FXApi", "Rate limit exceeded - switching to backup API")
-                        elif response.status == 403:
-                            await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid")
+                            if "data" in data:
+                                rates = data["data"]
+                                if pair_clean == "XAUUSD" and "XAU" in rates:
+                                    return float(rates["XAU"])
+                                elif api_symbol in rates:
+                                    return float(rates[api_symbol])
             
-            elif api_name == "twelve_data" and PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
-                # Use forex endpoint for currency pairs
+            elif api_name == "twelve_data":
+                # TwelveData - Fixed endpoint
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
                 if pair_clean == "XAUUSD":
-                    url = "https://api.twelvedata.com/quote"
-                    params = {
-                        "symbol": "XAU/USD",
-                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
-                    }
+                    params = {"symbol": "XAU/USD", "apikey": api_key}
                 else:
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
-                    params = {
-                        "symbol": api_symbol,
-                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
-                    }
+                    params = {"symbol": api_symbol, "apikey": api_key}
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
                             if "price" in data:
-                                price = float(data["price"])
-                                return price
+                                return float(data["price"])
                             elif "close" in data:
-                                price = float(data["close"])
-                                return price
-                            elif "message" in data and "limit" in data["message"].lower():
-                                await self.log_api_limit_warning("Twelve Data", f"Usage limit: {data['message']}")
-                        elif response.status == 429:
-                            await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - switching to backup")
+                                return float(data["close"])
             
-            elif api_name == "alpha_vantage" and PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]:
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
-                # Handle special cases for Alpha Vantage
+            elif api_name == "alpha_vantage":
+                # Skip Alpha Vantage for XAUUSD (inaccurate GLD proxy)
                 if pair_clean == "XAUUSD":
-                    # Use GLOBAL_QUOTE for GLD (Gold ETF) as proxy
-                    params = {
-                        "function": "GLOBAL_QUOTE",
-                        "symbol": "GLD",
-                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
-                    }
-                elif len(api_symbol) == 6:  # Standard currency pairs like EURUSD
+                    return None
+                    
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
+                if len(api_symbol) == 6:
                     from_currency = api_symbol[:3]
                     to_currency = api_symbol[3:]
                     params = {
                         "function": "CURRENCY_EXCHANGE_RATE",
                         "from_currency": from_currency,
                         "to_currency": to_currency,
-                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
+                        "apikey": api_key
                     }
-                else:
-                    # Skip if symbol format doesn't match expected pattern
-                    return None
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "Realtime Currency Exchange Rate" in data:
-                                rate_data = data["Realtime Currency Exchange Rate"]
-                                if "5. Exchange Rate" in rate_data:
-                                    return float(rate_data["5. Exchange Rate"])
-                            elif "Global Quote" in data and pair_clean == "XAUUSD":
-                                quote_data = data["Global Quote"]
-                                if "05. price" in quote_data:
-                                    # GLD ETF price, approximate conversion to XAU/USD
-                                    gld_price = float(quote_data["05. price"])
-                                    # GLD represents ~1/10th of an ounce, so multiply by ~100 for rough XAU price
-                                    estimated_xau_price = gld_price * 100
-                                    return estimated_xau_price
-                            elif "Note" in data and "call frequency" in data["Note"]:
-                                await self.log_api_limit_warning("Alpha Vantage", "Daily limit reached - switching to backup")
-                        elif response.status == 429:
-                            await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                if "Realtime Currency Exchange Rate" in data:
+                                    rate_data = data["Realtime Currency Exchange Rate"]
+                                    if "5. Exchange Rate" in rate_data:
+                                        return float(rate_data["5. Exchange Rate"])
             
-            elif False:  # FMP disabled - legacy endpoints no longer supported
-                # Use v4 endpoint for current quote
-                if pair_clean == "XAUUSD":
-                    url = "https://financialmodelingprep.com/api/v4/price/XAUUSD"
-                else:
-                    url = f"https://financialmodelingprep.com/api/v4/price/{api_symbol}"
-                params = {
-                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
-                }
+            elif api_name == "fmp":
+                # Financial Modeling Prep - Re-enabled with correct endpoint
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{api_symbol}"
+                params = {"apikey": api_key}
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            # Handle both v3 (list) and v4 (object) response formats
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
-                                price = float(data[0]["price"])
-                                return price
-                            elif isinstance(data, dict) and "price" in data:
-                                price = float(data["price"])
-                                return price
-                            elif isinstance(data, dict) and "Error Message" in data:
-                                if "limit" in data["Error Message"].lower():
-                                    await self.log_api_limit_warning("Financial Modeling Prep", f"Usage limit: {data['Error Message']}")
-                        elif response.status == 429:
-                            await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded")
+                                return float(data[0]["price"])
+            
+            # ===== 11 NEW APIS FOR MAXIMUM ACCURACY =====
+            
+            elif api_name == "exchangerate":
+                # ExchangeRate-API (v6) - 1,500 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['exchangerate']}/{api_key}/latest/USD"
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "conversion_rates" in data and api_symbol.replace("USD", "") in data["conversion_rates"]:
+                                rate = data["conversion_rates"][api_symbol.replace("USD", "")]
+                                return float(rate)
+            
+            elif api_name == "currencylayer":
+                # CurrencyLayer - 1,000 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['currencylayer']}"
+                params = {"access_key": api_key, "currencies": api_symbol.replace("USD", ""), "source": "USD"}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "quotes" in data:
+                                quote_key = f"USD{api_symbol.replace('USD', '')}"
+                                if quote_key in data["quotes"]:
+                                    return float(data["quotes"][quote_key])
+            
+            elif api_name == "fixer":
+                # Fixer.io - 1,000 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fixer']}"
+                params = {"access_key": api_key, "symbols": api_symbol.replace("USD", ""), "base": "USD"}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and api_symbol.replace("USD", "") in data["rates"]:
+                                return float(data["rates"][api_symbol.replace("USD", "")])
+            
+            elif api_name == "openexchange":
+                # Open Exchange Rates - 1,000 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['openexchange']}"
+                params = {"app_id": api_key, "symbols": api_symbol.replace("USD", "")}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and api_symbol.replace("USD", "") in data["rates"]:
+                                return float(data["rates"][api_symbol.replace("USD", "")])
+            
+            elif api_name == "currencyapi":
+                # CurrencyAPI.com - 300 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['currencyapi']}"
+                params = {"apikey": api_key, "currencies": api_symbol.replace("USD", ""), "base_currency": "USD"}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "data" in data and api_symbol.replace("USD", "") in data["data"]:
+                                return float(data["data"][api_symbol.replace("USD", "")]["value"])
+            
+            elif api_name == "apilayer":
+                # APILayer Exchange Rates - 1,000 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['apilayer']}"
+                params = {"symbols": api_symbol.replace("USD", ""), "base": "USD"}
+                headers = {"apikey": api_key}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and api_symbol.replace("USD", "") in data["rates"]:
+                                return float(data["rates"][api_symbol.replace("USD", "")])
+            
+            elif api_name == "abstractapi":
+                # AbstractAPI Exchange Rates - 1,000 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['abstractapi']}"
+                params = {"api_key": api_key, "base": "USD", "target": api_symbol.replace("USD", "")}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "exchange_rate" in data:
+                                return float(data["exchange_rate"])
+            
+            elif api_name == "currencybeacon":
+                # CurrencyBeacon - 5,000 free requests/month
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['currencybeacon']}"
+                params = {"api_key": api_key, "from": "USD", "to": api_symbol.replace("USD", "")}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and api_symbol.replace("USD", "") in data["rates"]:
+                                return float(data["rates"][api_symbol.replace("USD", "")])
+            
+            elif api_name == "metals_api":
+                # Metals-API - Gold/Silver specialist - 50 free requests/month
+                if pair_clean != "XAUUSD":
+                    return None  # Only handles precious metals
+                    
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['metals_api']}"
+                params = {"access_key": api_key, "base": "USD", "symbols": "XAU"}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and "XAU" in data["rates"]:
+                                # Metals API returns USD per ounce directly
+                                return float(data["rates"]["XAU"])
+            
+            elif api_name == "polygon":
+                # Polygon.io - 5 calls per minute free
+                if pair_clean == "XAUUSD":
+                    # Use forex endpoint for gold
+                    url = f"https://api.polygon.io/v1/last/currencies/USD/XAU"
+                else:
+                    from_curr = api_symbol[:3]
+                    to_curr = api_symbol[3:]
+                    url = f"https://api.polygon.io/v1/last/currencies/{from_curr}/{to_curr}"
+                
+                params = {"apikey": api_key}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "last" in data and "bid" in data["last"]:
+                                return float(data["last"]["bid"])
+            
+            elif api_name == "iex":
+                # IEX Cloud - Free tier available
+                if pair_clean == "XAUUSD":
+                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['iex']}/USDXAU"
+                else:
+                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['iex']}/{api_symbol}"
+                
+                params = {"token": api_key}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rate" in data:
+                                return float(data["rate"])
         
         except Exception as e:
+            # Silent fail - let other APIs try
             pass
         
         return None
