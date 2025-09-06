@@ -1446,8 +1446,8 @@ class TradingBot(commands.Bot):
                 # Parse the signal message
                 trade_data = self.parse_signal_message(message.content)
                 if trade_data:
-                    # Get live price at the moment of signal using all APIs for accuracy
-                    live_price = await self.get_live_price(trade_data["pair"], use_all_apis=True)
+                    # Get live price at the moment of signal using API priority order (API #1 first)
+                    live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
 
                     if live_price:
                         # Calculate live-price-based TP/SL levels for tracking
@@ -5114,8 +5114,8 @@ async def active_trades_view(interaction: discord.Interaction):
     # Process each trade and get current price status
     for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
         try:
-            # Get current live price using all APIs for maximum accuracy
-            current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=True)
+            # Get current live price using API priority order (API #1 first)
+            current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=False)
 
             if current_price:
                 # Analyze current position
