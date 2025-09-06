@@ -1771,7 +1771,8 @@ class TradingBot(commands.Bot):
                 "US500": ["US500", "SPX", "SPY"],               # S&P 500
                 "UK100": ["UK100", "UKX", "FTSE"],              # FTSE 100
                 "JPN225": ["JPN225", "N225", "NKY"],             # Nikkei 225
-                "AUS200": ["AUS200", "ASX", "XJO"]               # ASX 200
+                "AUS200": ["AUS200", "ASX", "XJO"],             # ASX 200
+                "XAUUSD": ["XAU", "GOLD", "XAUUSD"]             # Gold/USD pairs
             },
             "twelve_data": {
                 "US100": ["QQQ", "NASDAQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF available on free tier)
@@ -1781,12 +1782,14 @@ class TradingBot(commands.Bot):
                 "US500": ["SPX", "GSPC"],                       # S&P 500
                 "UK100": ["UKX", "FTSE"],                       # FTSE 100
                 "JPN225": ["N225", "NKY"],                      # Nikkei 225
-                "AUS200": ["XJO", "AXJO"]                       # ASX 200
+                "AUS200": ["XJO", "AXJO"],                      # ASX 200
+                "XAUUSD": ["XAUUSD", "XAU/USD", "GOLD"]         # Gold/USD pairs
             },
             "alpha_vantage": {
                 # Alpha Vantage doesn't support indices through currency exchange rate
                 # These symbols won't work with the current implementation
-                # We'll skip Alpha Vantage for indices
+                # We'll skip Alpha Vantage for indices but include XAUUSD
+                "XAUUSD": ["XAU", "GOLD"]                       # Gold/USD pairs
             },
             "fmp": {
                 "US100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],       # Nasdaq 100 ETF and index symbols
@@ -1796,7 +1799,8 @@ class TradingBot(commands.Bot):
                 "US500": ["^SPX", "^GSPC"],                    # S&P 500
                 "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
                 "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
-                "AUS200": ["^AXJO", "^XJO"]                    # ASX 200
+                "AUS200": ["^AXJO", "^XJO"],                   # ASX 200
+                "XAUUSD": ["XAUUSD", "GC=F", "GOLD"]           # Gold/USD pairs
             }
         }
         
@@ -1818,7 +1822,7 @@ class TradingBot(commands.Bot):
             # Map symbol to API-specific format
             api_symbol = self.get_api_symbol(api_name, pair_clean)
             
-            # Skip Alpha Vantage for indices (it doesn't support them via currency exchange)
+            # Skip Alpha Vantage for indices (it doesn't support them via currency exchange) but allow XAUUSD
             if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]:
                 return None
             if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
@@ -1861,10 +1865,21 @@ class TradingBot(commands.Bot):
             
             elif api_name == "alpha_vantage" and PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]:
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
+                # Handle special cases for Alpha Vantage
+                if pair_clean == "XAUUSD":
+                    from_currency = "XAU"
+                    to_currency = "USD"
+                elif len(api_symbol) == 6:  # Standard currency pairs like EURUSD
+                    from_currency = api_symbol[:3]
+                    to_currency = api_symbol[3:]
+                else:
+                    # Skip if symbol format doesn't match expected pattern
+                    return None
+                    
                 params = {
                     "function": "CURRENCY_EXCHANGE_RATE",
-                    "from_currency": api_symbol[:3],
-                    "to_currency": api_symbol[3:],
+                    "from_currency": from_currency,
+                    "to_currency": to_currency,
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
                 }
                 
@@ -2188,9 +2203,36 @@ class TradingBot(commands.Bot):
         
         return None
 
+    async def check_message_still_exists(self, message_id: str, trade_data: Dict) -> bool:
+        """Check if the original trading signal message still exists"""
+        try:
+            channel_id = trade_data.get("channel_id")
+            if not channel_id:
+                return False
+                
+            channel = self.get_channel(int(channel_id))
+            if not channel:
+                return False
+                
+            # Try to fetch the message
+            message = await channel.fetch_message(int(message_id))
+            return message is not None
+            
+        except discord.NotFound:
+            # Message was deleted
+            return False
+        except Exception as e:
+            # Other errors - assume message still exists to avoid false deletions
+            return True
+
     async def check_price_levels(self, message_id: str, trade_data: Dict) -> bool:
         """Check if current price has hit any TP/SL levels"""
         try:
+            # First check if the original message still exists
+            if not await self.check_message_still_exists(message_id, trade_data):
+                # Message was deleted, remove from tracking
+                await self.remove_trade_from_db(message_id)
+                return True  # Return True to indicate this trade should be removed from active tracking
             current_price = await self.get_live_price(trade_data["pair"])
             if current_price is None:
                 return False
@@ -4943,8 +4985,8 @@ async def active_trades_view(interaction: discord.Interaction):
     # Process each trade and get current price status
     for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
         try:
-            # Get current live price
-            current_price = await bot.get_live_price(trade_data["pair"])
+            # Get current live price using all APIs for maximum accuracy
+            current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=True)
             
             if current_price:
                 # Analyze current position
@@ -4985,13 +5027,13 @@ async def active_trades_view(interaction: discord.Interaction):
             )
     
     if len(active_trades) > 8:
-        embed.set_footer(text=f"Showing 8 of {len(active_trades)} active signals • Signals auto-removed after SL/TP3 hit")
+        embed.set_footer(text=f"Showing 8 of {len(active_trades)} active signals • Auto-removed when SL/TP3 hit or message deleted")
     else:
-        embed.set_footer(text="Signals automatically removed when SL or TP3 is hit (after notification sent)")
+        embed.set_footer(text="Signals automatically removed when SL/TP3 hit or original message deleted")
     
     await interaction.followup.send(embed=embed)
 
-@active_trades_group.command(name="remove", description="Remove a tracked trading signal")
+@active_trades_group.command(name="remove", description="Remove a tracked trading signal (also auto-removes when messages are deleted)")
 @app_commands.describe(trade_id="Select the trade to remove from tracking")
 async def active_trades_remove(interaction: discord.Interaction, trade_id: str):
     """Remove a specific trade from tracking"""
