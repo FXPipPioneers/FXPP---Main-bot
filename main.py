@@ -113,19 +113,19 @@ PRICE_TRACKING_CONFIG = {
     "signal_keyword": "Trade Signal For:",
     "active_trades": {},  # message_id: {trade_data}
     "api_keys": {
-        # Priority order: currencybeacon -> exchangerate_api -> currencylayer -> abstractapi
-        "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", ""),
-        "exchangerate_api_key": os.getenv("EXCHANGERATE_API_KEY", ""),
-        "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", ""),
-        "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", "")
+        # Priority order: fxapi -> twelve_data -> alpha_vantage -> fmp
+        "fxapi_key": os.getenv("FXAPI_KEY", ""),
+        "twelve_data_key": os.getenv("TWELVE_DATA_KEY", ""),
+        "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY", ""),
+        "fmp_key": os.getenv("FMP_KEY", "")
     },
     "api_endpoints": {
-        "currencybeacon": "https://api.currencybeacon.com/v1/latest",
-        "exchangerate_api": "https://v6.exchangerate-api.com/v6",
-        "currencylayer": "https://api.currencylayer.com/live",
-        "abstractapi": "https://exchange-rates.abstractapi.com/v1/live"
+        "fxapi": "https://fxapi.com/api/latest",
+        "twelve_data": "https://api.twelvedata.com/price",
+        "alpha_vantage": "https://www.alphavantage.co/query",
+        "fmp": "https://financialmodelingprep.com/api/v3/quote"
     },
-    "api_priority_order": ["currencybeacon", "exchangerate_api", "currencylayer", "abstractapi"],
+    "api_priority_order": ["fxapi", "twelve_data", "alpha_vantage", "fmp"],
     "last_price_check": {},  # pair: last_check_timestamp
     "check_interval": 180,  # 3 minutes - optimized calculation for 4 APIs and free tier limits
     "api_rotation_index": 0  # for tracking which API failed (for debugging)
@@ -1491,8 +1491,12 @@ class TradingBot(commands.Bot):
                     assigned_api = await self.get_working_api_for_pair(trade_data["pair"])
                     trade_data["assigned_api"] = assigned_api
                     
-                    # Get live price using robust fallback mechanism (not just assigned API)
-                    live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
+                    # Get live price using the assigned API for consistency, with fallback
+                    live_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
+                    
+                    # If assigned API fails, try fallback
+                    if live_price is None:
+                        live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
 
                     if live_price:
                         # Calculate live-price-based TP/SL levels for tracking
@@ -2054,116 +2058,86 @@ class TradingBot(commands.Bot):
         return pair_clean
 
     async def get_price_from_single_api(self, api_name: str, pair_clean: str) -> Optional[float]:
-        """Get price from a specific API - Only 4 selected APIs in priority order"""
+        """Get price from a specific API - Uses APIs that have keys configured"""
         try:
             # Check if API key exists
             api_key = PRICE_TRACKING_CONFIG["api_keys"].get(f"{api_name}_key")
             if not api_key:
                 return None
 
-            # === 1. CURRENCYBEACON (Priority #1) ===
-            if api_name == "currencybeacon":
-                url = PRICE_TRACKING_CONFIG["api_endpoints"]["currencybeacon"]
-                params = {"api_key": api_key}
+            # Get API-specific symbol mapping
+            symbol = self.get_api_symbol(api_name, pair_clean)
 
-                if pair_clean == "XAUUSD":
-                    params["base"] = "USD"
-                    params["symbols"] = "XAU"
-                elif len(pair_clean) == 6:
-                    params["base"] = pair_clean[:3]
-                    params["symbols"] = pair_clean[3:]
-
+            # === 1. FXAPI (Priority #1) ===
+            if api_name == "fxapi":
+                url = PRICE_TRACKING_CONFIG["api_endpoints"]["fxapi"]
+                params = {"api_key": api_key, "base": "USD", "symbols": symbol}
+                
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if "response" in data and "rates" in data["response"]:
-                                rates = data["response"]["rates"]
-                                if pair_clean == "XAUUSD" and "XAU" in rates:
-                                    return 1.0 / float(rates["XAU"])
-                                else:
-                                    target_currency = pair_clean[3:]
-                                    if target_currency in rates:
-                                        return float(rates[target_currency])
+                            if "rates" in data and symbol in data["rates"]:
+                                return float(data["rates"][symbol])
                         elif response.status == 429:
-                            await self.log_api_limit_warning("CurrencyBeacon", "Monthly limit reached - switching to backup API")
+                            await self.log_api_limit_warning("FxApi", "Rate limit reached - switching to backup API")
                         elif response.status == 403:
-                            await self.log_api_limit_warning("CurrencyBeacon", "API key invalid or expired")
+                            await self.log_api_limit_warning("FxApi", "API key invalid or expired")
 
-            # === 2. EXCHANGERATE-API (Priority #2) ===
-            elif api_name == "exchangerate_api":
-                if pair_clean == "XAUUSD":
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['exchangerate_api']}/{api_key}/latest/USD"
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                if "conversion_rates" in data and "XAU" in data["conversion_rates"]:
-                                    return 1.0 / float(data["conversion_rates"]["XAU"])
-                            elif response.status == 429:
-                                await self.log_api_limit_warning("ExchangeRate-API", "Monthly limit reached - switching to backup API")
-                else:
-                    if len(pair_clean) == 6:
-                        base_currency = pair_clean[:3]
-                        target_currency = pair_clean[3:]
-                        url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['exchangerate_api']}/{api_key}/pair/{base_currency}/{target_currency}"
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                                if response.status == 200:
-                                    data = await response.json()
-                                    if "conversion_rate" in data:
-                                        return float(data["conversion_rate"])
-                                elif response.status == 429:
-                                    await self.log_api_limit_warning("ExchangeRate-API", "Monthly limit reached - switching to backup API")
-
-            # === 3. CURRENCYLAYER (Priority #3) ===
-            elif api_name == "currencylayer":
-                url = PRICE_TRACKING_CONFIG["api_endpoints"]["currencylayer"]
-                params = {"access_key": api_key}
-
-                if pair_clean == "XAUUSD":
-                    params["currencies"] = "XAU"
-                elif len(pair_clean) == 6:
-                    params["currencies"] = pair_clean[3:]  # Target currency
-
+            # === 2. TWELVE DATA (Priority #2) ===
+            elif api_name == "twelve_data":
+                url = PRICE_TRACKING_CONFIG["api_endpoints"]["twelve_data"]
+                params = {"symbol": symbol, "apikey": api_key}
+                
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if data.get("success") and "quotes" in data:
-                                if pair_clean == "XAUUSD" and "USDXAU" in data["quotes"]:
-                                    return 1.0 / float(data["quotes"]["USDXAU"])
-                                else:
-                                    # Find matching quote
-                                    for quote_key, quote_value in data["quotes"].items():
-                                        if quote_key.endswith(pair_clean[3:]):
-                                            return float(quote_value)
+                            if "price" in data:
+                                return float(data["price"])
                         elif response.status == 429:
-                            await self.log_api_limit_warning("Currencylayer", "Monthly limit reached - switching to backup API")
+                            await self.log_api_limit_warning("Twelve Data", "Rate limit reached - switching to backup API")
+                        elif response.status == 403:
+                            await self.log_api_limit_warning("Twelve Data", "API key invalid or expired")
 
-            # === 4. ABSTRACTAPI (Priority #4) ===
-            elif api_name == "abstractapi":
-                url = PRICE_TRACKING_CONFIG["api_endpoints"]["abstractapi"]
-                params = {"api_key": api_key}
-
-                if pair_clean == "XAUUSD":
-                    params["base"] = "USD"
-                    params["target"] = "XAU"
-                elif len(pair_clean) == 6:
-                    params["base"] = pair_clean[:3]
-                    params["target"] = pair_clean[3:]
-
+            # === 3. ALPHA VANTAGE (Priority #3) ===
+            elif api_name == "alpha_vantage":
+                url = PRICE_TRACKING_CONFIG["api_endpoints"]["alpha_vantage"]
+                params = {
+                    "function": "CURRENCY_EXCHANGE_RATE",
+                    "from_currency": pair_clean[:3],
+                    "to_currency": pair_clean[3:],
+                    "apikey": api_key
+                }
+                
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if "exchange_rate" in data:
-                                rate = float(data["exchange_rate"])
-                                if pair_clean == "XAUUSD":
-                                    return 1.0 / rate
-                                return rate
+                            if "Realtime Currency Exchange Rate" in data:
+                                exchange_data = data["Realtime Currency Exchange Rate"]
+                                if "5. Exchange Rate" in exchange_data:
+                                    return float(exchange_data["5. Exchange Rate"])
                         elif response.status == 429:
-                            await self.log_api_limit_warning("AbstractAPI", "Monthly limit reached - all backup APIs exhausted")
+                            await self.log_api_limit_warning("Alpha Vantage", "Rate limit reached - switching to backup API")
+                        elif response.status == 403:
+                            await self.log_api_limit_warning("Alpha Vantage", "API key invalid or expired")
+
+            # === 4. FMP (Priority #4) ===
+            elif api_name == "fmp":
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{symbol}"
+                params = {"apikey": api_key}
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
+                                return float(data[0]["price"])
+                        elif response.status == 429:
+                            await self.log_api_limit_warning("FMP", "Rate limit reached - switching to backup API")
+                        elif response.status == 403:
+                            await self.log_api_limit_warning("FMP", "API key invalid or expired")
 
         except Exception as e:
             print(f"⚠️ {api_name} API error for {pair_clean}: {str(e)[:100]}")
@@ -2249,74 +2223,6 @@ class TradingBot(commands.Bot):
         await self.log_to_discord(warning_msg)
         print(f"API LIMIT WARNING: {api_name} - {message}")
 
-
-    async def get_verified_price_all_apis(self, pair_clean: str) -> Optional[float]:
-        """Get price from all 4 selected APIs for cross-verification"""
-        # Collect prices from the 4 selected APIs for cross-verification
-        prices = {}
-        api_errors = {}
-
-        # Try all 4 APIs in priority order
-        for api_name in PRICE_TRACKING_CONFIG["api_priority_order"]:
-            try:
-                price = await self.get_price_from_single_api(api_name, pair_clean)
-                if price is not None:
-                    prices[api_name] = price
-                else:
-                    api_errors[api_name] = "no_data"
-            except Exception as e:
-                api_errors[api_name] = str(e)[:50]
-
-        # Verify price accuracy using the 4 API sources
-        return await self.verify_price_accuracy(pair_clean, prices, api_errors)
-
-    async def verify_price_accuracy(self, pair: str, prices: Dict[str, float], api_errors: Dict[str, str]) -> Optional[float]:
-        """Verify price accuracy by cross-checking multiple API sources"""
-        if not prices:
-            print(f"❌ No valid prices obtained for {pair} - all APIs failed")
-            if api_errors:
-                error_summary = ", ".join([f"{api}: {error}" for api, error in api_errors.items()])
-                print(f"   API Errors: {error_summary}")
-            return None
-
-        if len(prices) == 1:
-            # Only one source - use it but log warning
-            api_name, price = next(iter(prices.items()))
-            print(f"⚠️ Only {api_name} provided price for {pair}: ${price}")
-            return price
-
-        # Multiple sources - verify consistency
-        price_values = list(prices.values())
-        avg_price = sum(price_values) / len(price_values)
-
-        # Check if all prices are within 0.1% of average (very tight tolerance)
-        tolerance = 0.001  # 0.1%
-        consistent_prices = []
-
-        for api_name, price in prices.items():
-            deviation = abs(price - avg_price) / avg_price
-            if deviation <= tolerance:
-                consistent_prices.append((api_name, price))
-            else:
-                print(f"⚠️ {api_name} price for {pair} deviates significantly: ${price} (avg: ${avg_price:.5f})")
-
-        if len(consistent_prices) >= 2:
-            # Use average of consistent prices
-            final_price = sum([price for _, price in consistent_prices]) / len(consistent_prices)
-            api_names = ", ".join([api for api, _ in consistent_prices])
-            print(f"✅ Price verified for {pair}: ${final_price:.5f} (sources: {api_names})")
-            return final_price
-        elif len(prices) >= 2:
-            # Use median if we have multiple sources but they're not very consistent
-            sorted_prices = sorted(price_values)
-            median_price = sorted_prices[len(sorted_prices)//2]
-            print(f"⚠️ Using median price for {pair}: ${median_price:.5f} (prices varied across sources)")
-            return median_price
-        else:
-            # Fallback to single source
-            api_name, price = next(iter(prices.items()))
-            return price
-
     async def get_all_api_prices(self, pair_clean: str) -> Dict[str, any]:
         """Get prices from all 4 selected APIs for comparison - returns dict with prices and errors"""
         api_priority_order = PRICE_TRACKING_CONFIG["api_priority_order"]
@@ -2338,18 +2244,6 @@ class TradingBot(commands.Bot):
                 api_results[api_name] = {"price": None, "status": f"error: {str(e)[:50]}"}
         
         return api_results
-
-    async def log_api_limit_warning(self, api_name: str, message: str):
-        """Log API limit warnings to Discord and console"""
-        warning_msg = f"🚨 **{api_name} API Limit Warning**\n{message}\n\n" + \
-                     f"**Action Required:**\n" + \
-                     f"• Check your {api_name} dashboard for usage details\n" + \
-                     f"• Consider upgrading your plan for higher limits\n" + \
-                     f"• Bot will continue using other API sources\n\n" + \
-                     f"**Impact:** Price tracking accuracy may be reduced if multiple APIs are limited."
-
-        await self.log_to_discord(warning_msg)
-        print(f"API LIMIT WARNING: {api_name} - {message}")
 
     def parse_signal_message(self, content: str) -> Optional[Dict]:
         """Parse a trading signal message to extract trade data"""
@@ -2491,10 +2385,14 @@ class TradingBot(commands.Bot):
                 await self.remove_trade_from_db(message_id)
                 return True  # Return True to indicate this trade should be removed from active tracking
             # Use the assigned API for this specific signal to ensure consistency
-            assigned_api = trade_data.get("assigned_api", "currencybeacon")
+            assigned_api = trade_data.get("assigned_api", "fxapi")
             current_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
+            
+            # If assigned API fails, try fallback
             if current_price is None:
-                return False
+                current_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
+                if current_price is None:
+                    return False
 
             action = trade_data["action"]
             entry = trade_data["entry"]
@@ -5385,9 +5283,13 @@ async def active_trades_view(interaction: discord.Interaction):
     # Process each trade and get current price status
     for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
         try:
-            # Get current live price using robust API fallback (like /pricetest)
-            # Try all APIs until one works instead of just the assigned API
-            current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=False)
+            # Get current live price - try assigned API first, then fallback to others
+            assigned_api = trade_data.get("assigned_api", "fxapi")
+            current_price = await bot.get_live_price(trade_data["pair"], specific_api=assigned_api)
+            
+            # If assigned API fails, try fallback rotation
+            if current_price is None:
+                current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=False)
 
             if current_price:
                 # Analyze current position
