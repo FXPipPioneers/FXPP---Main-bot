@@ -1491,8 +1491,8 @@ class TradingBot(commands.Bot):
                     assigned_api = await self.get_working_api_for_pair(trade_data["pair"])
                     trade_data["assigned_api"] = assigned_api
                     
-                    # Get live price using the assigned API for consistency
-                    live_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
+                    # Get live price using robust fallback mechanism (not just assigned API)
+                    live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
 
                     if live_price:
                         # Calculate live-price-based TP/SL levels for tracking
@@ -1715,6 +1715,9 @@ class TradingBot(commands.Bot):
 
         try:
             async with self.db_pool.acquire() as conn:
+                # Clear existing in-memory trades first to avoid duplicates
+                PRICE_TRACKING_CONFIG["active_trades"].clear()
+                
                 # Load all active trades from database
                 rows = await conn.fetch('SELECT * FROM active_trades ORDER BY created_at DESC')
 
@@ -1748,10 +1751,14 @@ class TradingBot(commands.Bot):
                     # Store in memory for quick access
                     PRICE_TRACKING_CONFIG["active_trades"][row['message_id']] = trade_data
 
-                pass
+                if len(rows) > 0:
+                    print(f"✅ Loaded {len(rows)} active trades from database")
+                else:
+                    print("📋 No active trades found in database")
 
         except Exception as e:
-            pass
+            print(f"❌ Error loading active trades from database: {str(e)}")
+            await self.log_to_discord(f"❌ Error loading active trades from database: {str(e)}")
 
     async def save_trade_to_db(self, message_id: str, trade_data: dict):
         """Save a new trading signal to database for persistence"""
@@ -1822,15 +1829,13 @@ class TradingBot(commands.Bot):
             return PRICE_TRACKING_CONFIG["active_trades"]
 
         try:
-            # First try to use in-memory data for speed
-            if PRICE_TRACKING_CONFIG["active_trades"]:
-                return PRICE_TRACKING_CONFIG["active_trades"]
-
-            # If in-memory is empty, load from database
+            # Always load from database to ensure we have the latest data
+            # This ensures trades persist across bot restarts
             await self.load_active_trades_from_db()
             return PRICE_TRACKING_CONFIG["active_trades"]
 
         except Exception as e:
+            print(f"Error loading trades from database: {e}")
             return PRICE_TRACKING_CONFIG["active_trades"]
 
     async def get_trade_from_db(self, message_id: str):
@@ -5380,9 +5385,9 @@ async def active_trades_view(interaction: discord.Interaction):
     # Process each trade and get current price status
     for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
         try:
-            # Get current live price using the assigned API for this specific signal
-            assigned_api = trade_data.get("assigned_api", "currencybeacon")
-            current_price = await bot.get_live_price(trade_data["pair"], specific_api=assigned_api)
+            # Get current live price using robust API fallback (like /pricetest)
+            # Try all APIs until one works instead of just the assigned API
+            current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=False)
 
             if current_price:
                 # Analyze current position
