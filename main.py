@@ -872,6 +872,7 @@ class TradingBot(commands.Bot):
                         discord_tp3 DECIMAL(12,8),
                         discord_sl DECIMAL(12,8),
                         live_entry DECIMAL(12,8),
+                        assigned_api VARCHAR(30) DEFAULT 'currencybeacon',
                         status VARCHAR(50) DEFAULT 'active',
                         tp_hits TEXT DEFAULT '',
                         breakeven_active BOOLEAN DEFAULT FALSE,
@@ -1486,8 +1487,12 @@ class TradingBot(commands.Bot):
                 # Parse the signal message
                 trade_data = self.parse_signal_message(message.content)
                 if trade_data:
-                    # Get live price at the moment of signal using API priority order (API #1 first)
-                    live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
+                    # Determine which API works for this pair and assign it permanently
+                    assigned_api = await self.get_working_api_for_pair(trade_data["pair"])
+                    trade_data["assigned_api"] = assigned_api
+                    
+                    # Get live price using the assigned API for consistency
+                    live_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
 
                     if live_price:
                         # Calculate live-price-based TP/SL levels for tracking
@@ -1729,6 +1734,7 @@ class TradingBot(commands.Bot):
                         "discord_tp3": float(row['discord_tp3']) if row['discord_tp3'] else None,
                         "discord_sl": float(row['discord_sl']) if row['discord_sl'] else None,
                         "live_entry": float(row['live_entry']) if row['live_entry'] else None,
+                        "assigned_api": row.get('assigned_api', 'currencybeacon'),
                         "status": row['status'],
                         "tp_hits": row['tp_hits'].split(',') if row['tp_hits'] else [],
                         "breakeven_active": row['breakeven_active'],
@@ -1761,16 +1767,17 @@ class TradingBot(commands.Bot):
                             message_id, channel_id, guild_id, pair, action,
                             entry_price, tp1_price, tp2_price, tp3_price, sl_price,
                             discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
-                            live_entry, status, tp_hits, breakeven_active
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                            live_entry, assigned_api, status, tp_hits, breakeven_active
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                     ''', 
                     message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
                     trade_data["pair"], trade_data["action"], 
                     trade_data["entry"], trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"],
                     trade_data.get("discord_entry"), trade_data.get("discord_tp1"), trade_data.get("discord_tp2"), 
                     trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
-                    trade_data.get("live_entry"), trade_data.get("status", "active"),
-                    ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                    trade_data.get("live_entry"), trade_data.get("assigned_api", "currencybeacon"), 
+                    trade_data.get("status", "active"), ','.join(trade_data.get("tp_hits", [])), 
+                    trade_data.get("breakeven_active", False)
                     )
             except Exception as e:
                 pass  # Continue with in-memory storage if database fails
@@ -1854,6 +1861,7 @@ class TradingBot(commands.Bot):
                         'discord_tp3': float(row['discord_tp3']) if row['discord_tp3'] else None,
                         'discord_sl': float(row['discord_sl']) if row['discord_sl'] else None,
                         'live_entry': float(row['live_entry']) if row['live_entry'] else None,
+                        'assigned_api': row.get('assigned_api', 'currencybeacon'),
                         'status': row['status'],
                         'tp_hits': tp_hits_list,
                         'breakeven_active': row['breakeven_active'],
@@ -1889,6 +1897,25 @@ class TradingBot(commands.Bot):
         
         # Night pause: 01:00-07:00 Amsterdam time on weekdays (Monday-Friday)
         return weekday <= 4 and 1 <= hour < 7
+
+    async def get_working_api_for_pair(self, pair: str) -> str:
+        """Determine which API successfully provides a price for a trading pair"""
+        pair_clean = pair.replace("/", "").upper()
+        
+        # Try APIs in priority order and return the first one that works
+        for api_name in PRICE_TRACKING_CONFIG["api_priority_order"]:
+            try:
+                price = await self.get_price_from_single_api(api_name, pair_clean)
+                if price is not None:
+                    print(f"✅ API assignment: {pair_clean} will use {api_name} (price: {price})")
+                    return api_name
+            except Exception as e:
+                print(f"⚠️ {api_name} failed for {pair_clean}: {str(e)[:100]}")
+                continue
+        
+        # If all APIs fail, default to currencybeacon
+        print(f"⚠️ All APIs failed for {pair_clean}, defaulting to currencybeacon")
+        return "currencybeacon"
 
     async def remove_trade_from_tracking(self, message_id: str):
         """Remove a trade from tracking (wrapper for manual removal)"""
@@ -1926,13 +1953,17 @@ class TradingBot(commands.Bot):
 
     # ===== LIVE PRICE TRACKING METHODS =====
 
-    async def get_live_price(self, pair: str, use_all_apis: bool = False) -> Optional[float]:
-        """Get live price with smart API rotation to conserve free tier limits"""
+    async def get_live_price(self, pair: str, use_all_apis: bool = False, specific_api: str = None) -> Optional[float]:
+        """Get live price with smart API rotation or from specific API for consistency"""
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return None
 
         # Normalize pair format for different APIs
         pair_clean = pair.replace("/", "").upper()
+
+        # If specific API requested (for signal consistency), use only that API
+        if specific_api:
+            return await self.get_price_from_single_api(specific_api, pair_clean)
 
         # For regular monitoring, use only 1-2 APIs to conserve limits
         # For initial signal verification, use all APIs for maximum accuracy
@@ -2454,7 +2485,9 @@ class TradingBot(commands.Bot):
                 # Message was deleted, remove from tracking
                 await self.remove_trade_from_db(message_id)
                 return True  # Return True to indicate this trade should be removed from active tracking
-            current_price = await self.get_live_price(trade_data["pair"])
+            # Use the assigned API for this specific signal to ensure consistency
+            assigned_api = trade_data.get("assigned_api", "currencybeacon")
+            current_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
             if current_price is None:
                 return False
 
@@ -5347,8 +5380,9 @@ async def active_trades_view(interaction: discord.Interaction):
     # Process each trade and get current price status
     for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
         try:
-            # Get current live price using API priority order (API #1 first)
-            current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=False)
+            # Get current live price using the assigned API for this specific signal
+            assigned_api = trade_data.get("assigned_api", "currencybeacon")
+            current_price = await bot.get_live_price(trade_data["pair"], specific_api=assigned_api)
 
             if current_price:
                 # Analyze current position
