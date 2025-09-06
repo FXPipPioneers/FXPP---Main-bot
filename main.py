@@ -127,10 +127,6 @@ PRICE_TRACKING_CONFIG = {
         "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", ""),
         "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", ""),
         "polygon_api_key": os.getenv("POLYGON_API_KEY", ""),
-        # Additional free APIs for better coverage
-        "coinapi_key": os.getenv("COINAPI_KEY", ""),
-        "metalpriceapi_key": os.getenv("METALPRICEAPI_KEY", ""),
-        "binance_api": os.getenv("BINANCE_API_KEY", ""),  # Free tier available
     },
     "api_endpoints": {
         "fxapi": "https://fxapi.com/api/latest",
@@ -147,10 +143,6 @@ PRICE_TRACKING_CONFIG = {
         "abstractapi": "https://exchange-rates.abstractapi.com/v1/live",
         "currencybeacon": "https://api.currencybeacon.com/v1/latest",
         "polygon": "https://api.polygon.io/v1/conversion",
-        # Additional free APIs for better price coverage
-        "coinapi": "https://rest.coinapi.io/v1/exchangerate",
-        "metalpriceapi": "https://api.metals.live/v1/spot",
-        "binance": "https://api.binance.com/api/v3/ticker/price",
         "coinbase": "https://api.coinbase.com/v2/exchange-rates",  # Free, no key needed
         "fcsapi": "https://fcsapi.com/api-v3/forex/latest"
     },
@@ -1918,6 +1910,22 @@ class TradingBot(commands.Bot):
 
     # ===== LIVE PRICE TRACKING METHODS =====
     
+    def format_price_for_pair(self, price: float, pair: str) -> str:
+        """Format price according to pair-specific decimal configuration"""
+        if pair.upper() in PAIR_CONFIG:
+            decimals = PAIR_CONFIG[pair.upper()]['decimals']
+        else:
+            # Default to 4 decimals for unknown pairs
+            decimals = 4
+        
+        # Determine currency symbol based on pair
+        if 'USD' in pair.upper():
+            currency_symbol = '$'
+        else:
+            currency_symbol = ''
+        
+        return f"{currency_symbol}{price:.{decimals}f}"
+    
     async def get_live_price(self, pair: str, use_all_apis: bool = False) -> Optional[float]:
         """Get live price with smart API rotation to conserve free tier limits"""
         if not PRICE_TRACKING_CONFIG["enabled"]:
@@ -1925,6 +1933,11 @@ class TradingBot(commands.Bot):
             
         # Normalize pair format for different APIs
         pair_clean = pair.replace("/", "").upper()
+        
+        # Exclude US100 and GER40 from all price tracking
+        if pair_clean in ["US100", "GER40", "GER30", "NAS100"]:
+            await self.log_price_debug(f"⚠️ Skipping price tracking for {pair_clean} - excluded by user preference")
+            return None
         
         # For regular monitoring, use only 1-2 APIs to conserve limits
         # For initial signal verification, use all APIs for maximum accuracy
@@ -1935,9 +1948,9 @@ class TradingBot(commands.Bot):
     
     async def get_price_optimized_rotation(self, pair_clean: str) -> Optional[float]:
         """Get price using smart API rotation to minimize free tier usage"""
-        # Define API priority order (most reliable first) - expanded with new free APIs
-        api_order = ["binance", "coinbase", "fxapi", "exchangerate_api", "currencyapi", "twelve_data", 
-                     "metalpriceapi", "abstractapi", "currencylayer", "fixer", "openexchange", 
+        # Define API priority order (most reliable first)
+        api_order = ["fxapi", "exchangerate_api", "currencyapi", "twelve_data", 
+                     "abstractapi", "currencylayer", "fixer", "openexchange", 
                      "alpha_vantage", "apilayer", "currencybeacon", "polygon", "fmp"]
         
         # Rotate through APIs to distribute load
@@ -2624,6 +2637,11 @@ class TradingBot(commands.Bot):
             
             # Basic validation
             if trade_data["pair"] and trade_data["action"] and trade_data["entry"]:
+                # Exclude US100 and GER40 from signal tracking
+                pair_upper = trade_data["pair"].upper()
+                if pair_upper in ["US100", "GER40", "GER30", "NAS100"]:
+                    print(f"⚠️ Excluding {pair_upper} from signal tracking per user preference")
+                    return None
                 return trade_data
             else:
                 return None
@@ -5708,17 +5726,36 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
     await interaction.response.defer()
     
     try:
-        price = await bot.get_live_price(pair)
+        # Get prices from all APIs to show individual results
+        pair_clean = pair.replace("/", "").upper()
+        prices = {}
+        api_errors = {}
+        
+        # Test all APIs and collect individual prices
+        for api_name in PRICE_TRACKING_CONFIG["api_keys"].keys():
+            if PRICE_TRACKING_CONFIG["api_keys"][api_name]:  # Only test APIs with keys
+                try:
+                    price = await bot.get_price_from_single_api(api_name, pair_clean)
+                    if price is not None:
+                        prices[api_name] = price
+                    else:
+                        api_errors[api_name] = "No price returned"
+                except Exception as e:
+                    api_errors[api_name] = str(e)[:30]
+        
+        # Get consensus price for display
+        consensus_price = await bot.get_verified_price_all_apis(pair_clean) if prices else None
         
         embed = discord.Embed(
             title="💰 Price Test",
-            color=discord.Color.green() if price else discord.Color.red()
+            color=discord.Color.green() if consensus_price else discord.Color.red()
         )
         
-        if price:
+        if consensus_price:
+            formatted_price = bot.format_price_for_pair(consensus_price, pair)
             embed.add_field(
                 name=f"✅ {pair.upper()}",
-                value=f"Current Price: **{price}**",
+                value=f"Current Price: {formatted_price}",
                 inline=False
             )
         else:
@@ -5728,11 +5765,19 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
                 inline=False
             )
             
-        # Show API status
+        # Show API status with individual prices
         api_status = []
         for api_name, api_key in PRICE_TRACKING_CONFIG["api_keys"].items():
-            status = "✅" if api_key else "❌"
-            api_status.append(f"{status} {api_name.replace('_', ' ').title()}")
+            if api_key:
+                if api_name in prices:
+                    formatted_api_price = bot.format_price_for_pair(prices[api_name], pair)
+                    api_status.append(f"✅ {api_name.replace('_', ' ').title()} - {formatted_api_price}")
+                elif api_name in api_errors:
+                    api_status.append(f"❌ {api_name.replace('_', ' ').title()} - {api_errors[api_name]}")
+                else:
+                    api_status.append(f"⏳ {api_name.replace('_', ' ').title()} - Testing...")
+            else:
+                api_status.append(f"❌ {api_name.replace('_', ' ').title()}")
         
         embed.add_field(
             name="🔑 API Status",
