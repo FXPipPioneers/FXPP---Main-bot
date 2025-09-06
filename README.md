@@ -1,7 +1,16 @@
 
 # Discord Trading Bot with Timed Auto-Role System
 
+🚀 **PRODUCTION BOT - RUNS 24/7 ON RENDER.COM WITH POSTGRESQL DATABASE**
+
 A comprehensive Discord bot for trading signal distribution with automatic TP/SL calculations, statistics tracking, and an advanced timed auto-role system with PostgreSQL database integration.
+
+## 🌐 Deployment Status
+- **Platform**: Render.com Web Service (24/7 hosting)
+- **Database**: Render managed PostgreSQL instance
+- **Region**: Oregon
+- **Runtime**: Python 3.11.0
+- **Health Monitoring**: Continuous uptime monitoring via /health endpoint
 
 ## 🚀 Key Features
 

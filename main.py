@@ -239,6 +239,48 @@ class TradingBot(commands.Bot):
         except Exception as e:
             print(f"Failed to load bot status: {e}")
     
+    async def save_price_tracking_config(self):
+        """Save price tracking configuration to database for persistence"""
+        if not self.db_pool:
+            return
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                current_time = datetime.now(AMSTERDAM_TZ)
+                await conn.execute("""
+                    INSERT INTO price_tracking_config (id, enabled, check_interval, last_updated) 
+                    VALUES (1, $1, $2, $3)
+                    ON CONFLICT (id) DO UPDATE SET 
+                    enabled = $1, check_interval = $2, last_updated = $3
+                """, PRICE_TRACKING_CONFIG["enabled"], 
+                     PRICE_TRACKING_CONFIG["check_interval"], 
+                     current_time)
+                print(f"✅ Price tracking config saved to database: enabled={PRICE_TRACKING_CONFIG['enabled']}")
+        except Exception as e:
+            print(f"Failed to save price tracking config: {e}")
+    
+    async def load_price_tracking_config(self):
+        """Load price tracking configuration from database"""
+        if not self.db_pool:
+            return
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                result = await conn.fetchrow("SELECT enabled, check_interval FROM price_tracking_config WHERE id = 1")
+                if result:
+                    PRICE_TRACKING_CONFIG["enabled"] = result['enabled']
+                    PRICE_TRACKING_CONFIG["check_interval"] = result['check_interval']
+                    print(f"✅ Loaded price tracking config: enabled={result['enabled']}, interval={result['check_interval']}s")
+                else:
+                    # First time setup - ensure enabled and save to database
+                    PRICE_TRACKING_CONFIG["enabled"] = True
+                    await self.save_price_tracking_config()
+                    print("✅ Price tracking initialized as enabled (first time setup)")
+        except Exception as e:
+            print(f"Failed to load price tracking config: {e}")
+            # Fallback to ensure it's enabled
+            PRICE_TRACKING_CONFIG["enabled"] = True
+    
     async def recover_offline_members(self):
         """Check for members who joined while bot was offline and assign auto-roles"""
         if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG["role_id"]:
@@ -546,6 +588,100 @@ class TradingBot(commands.Bot):
             await self.log_to_discord(f"❌ Error during missed signal recovery: {str(e)}")
             print(f"Missed signal recovery error: {e}")
 
+    async def check_offline_tp_sl_hits(self):
+        """Check for TP/SL hits that occurred while bot was offline"""
+        if not PRICE_TRACKING_CONFIG["enabled"]:
+            return
+            
+        try:
+            # Load active trades from database first
+            await self.load_active_trades_from_db()
+            active_trades = PRICE_TRACKING_CONFIG["active_trades"]
+            
+            if not active_trades:
+                return
+                
+            await self.log_to_discord("🔍 Checking for TP/SL hits that occurred while offline...")
+            
+            offline_hits_found = 0
+            
+            for message_id, trade_data in list(active_trades.items()):
+                try:
+                    # Get current price to check if any levels were hit
+                    current_price = await self.get_live_price(trade_data["pair"], use_all_apis=True)
+                    if current_price is None:
+                        continue
+                    
+                    # Check if message still exists (cleanup deleted signals)
+                    if not await self.check_message_still_exists(message_id, trade_data):
+                        await self.remove_trade_from_db(message_id)
+                        continue
+                    
+                    action = trade_data["action"]
+                    entry = trade_data["entry"]
+                    tp_hits = trade_data.get('tp_hits', [])
+                    
+                    # Check for SL hit while offline
+                    if action == "BUY" and current_price <= trade_data["sl"]:
+                        await self.handle_sl_hit(message_id, trade_data, offline_hit=True)
+                        offline_hits_found += 1
+                        continue
+                    elif action == "SELL" and current_price >= trade_data["sl"]:
+                        await self.handle_sl_hit(message_id, trade_data, offline_hit=True)
+                        offline_hits_found += 1
+                        continue
+                    
+                    # Check for TP hits while offline (TP3 -> TP2 -> TP1 priority)
+                    if action == "BUY":
+                        if "tp3" not in tp_hits and current_price >= trade_data["tp3"]:
+                            await self.handle_tp_hit(message_id, trade_data, "tp3", offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                        elif "tp2" not in tp_hits and current_price >= trade_data["tp2"]:
+                            await self.handle_tp_hit(message_id, trade_data, "tp2", offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                        elif "tp1" not in tp_hits and current_price >= trade_data["tp1"]:
+                            await self.handle_tp_hit(message_id, trade_data, "tp1", offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                    elif action == "SELL":
+                        if "tp3" not in tp_hits and current_price <= trade_data["tp3"]:
+                            await self.handle_tp_hit(message_id, trade_data, "tp3", offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                        elif "tp2" not in tp_hits and current_price <= trade_data["tp2"]:
+                            await self.handle_tp_hit(message_id, trade_data, "tp2", offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                        elif "tp1" not in tp_hits and current_price <= trade_data["tp1"]:
+                            await self.handle_tp_hit(message_id, trade_data, "tp1", offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                    
+                    # Check for breakeven hits if TP2 was already hit
+                    if trade_data.get("breakeven_active"):
+                        if action == "BUY" and current_price <= entry:
+                            await self.handle_breakeven_hit(message_id, trade_data, offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                        elif action == "SELL" and current_price >= entry:
+                            await self.handle_breakeven_hit(message_id, trade_data, offline_hit=True)
+                            offline_hits_found += 1
+                            continue
+                            
+                except Exception as e:
+                    continue
+            
+            if offline_hits_found > 0:
+                await self.log_to_discord(f"⚡ Found and processed {offline_hits_found} TP/SL hits that occurred while offline")
+            else:
+                await self.log_to_discord("✅ No offline TP/SL hits detected")
+                
+        except Exception as e:
+            await self.log_to_discord(f"❌ Error checking offline TP/SL hits: {str(e)}")
+            print(f"Offline TP/SL check error: {e}")
+
     async def get_historical_price(self, pair: str, timestamp: datetime) -> Optional[float]:
         """Get historical price for a trading pair at a specific timestamp"""
         try:
@@ -684,6 +820,16 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Price tracking config table for persistent 24/7 monitoring
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS price_tracking_config (
+                        id SERIAL PRIMARY KEY,
+                        enabled BOOLEAN DEFAULT TRUE,
+                        check_interval INTEGER DEFAULT 225,
+                        last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+
                 # Bot status table for offline recovery
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS bot_status (
@@ -775,6 +921,9 @@ class TradingBot(commands.Bot):
             
             # Load active trades from database for 24/7 persistence
             await self.load_active_trades_from_db()
+            
+            # Load price tracking configuration for 24/7 monitoring persistence
+            await self.load_price_tracking_config()
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -996,6 +1145,9 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
+            
+        # Check for TP/SL hits that occurred while offline
+        await self.check_offline_tp_sl_hits()
 
         # Database initialization is now handled in setup_hook
 
@@ -1740,8 +1892,8 @@ class TradingBot(commands.Bot):
     
     async def get_price_optimized_rotation(self, pair_clean: str) -> Optional[float]:
         """Get price using smart API rotation to minimize free tier usage"""
-        # Define API priority order (most reliable first)
-        api_order = ["twelve_data", "fxapi", "alpha_vantage", "fmp"]
+        # Define API priority order (most reliable first) - using existing APIs only
+        api_order = ["fxapi", "twelve_data", "alpha_vantage"]
         
         # Rotate through APIs to distribute load
         start_index = PRICE_TRACKING_CONFIG["api_rotation_index"] % len(api_order)
@@ -1783,13 +1935,12 @@ class TradingBot(commands.Bot):
                 "UK100": ["UKX", "FTSE"],                       # FTSE 100
                 "JPN225": ["N225", "NKY"],                      # Nikkei 225
                 "AUS200": ["XJO", "AXJO"],                      # ASX 200
-                "XAUUSD": ["XAUUSD", "XAU/USD", "GOLD"]         # Gold/USD pairs
+                "XAUUSD": ["XAU/USD", "GOLD"]         # Gold/USD pairs - XAU/USD works
             },
             "alpha_vantage": {
                 # Alpha Vantage doesn't support indices through currency exchange rate
                 # These symbols won't work with the current implementation
-                # We'll skip Alpha Vantage for indices but include XAUUSD
-                "XAUUSD": ["XAU", "GOLD"]                       # Gold/USD pairs
+                # Skip XAUUSD for Alpha Vantage - GLD ETF gives inaccurate prices vs spot gold
             },
             "fmp": {
                 "US100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],       # Nasdaq 100 ETF and index symbols
@@ -1800,7 +1951,7 @@ class TradingBot(commands.Bot):
                 "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
                 "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
                 "AUS200": ["^AXJO", "^XJO"],                   # ASX 200
-                "XAUUSD": ["XAUUSD", "GC=F", "GOLD"]           # Gold/USD pairs
+                "XAUUSD": ["XAUUSD"]                           # Gold spot only (avoid futures GC=F which can differ from spot)
             }
         }
         
@@ -1822,34 +1973,56 @@ class TradingBot(commands.Bot):
             # Map symbol to API-specific format
             api_symbol = self.get_api_symbol(api_name, pair_clean)
             
-            # Skip Alpha Vantage for indices (it doesn't support them via currency exchange) but allow XAUUSD
-            if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]:
+            # Skip Alpha Vantage for indices and XAUUSD (GLD ETF gives inaccurate prices vs spot gold)
+            if api_name == "alpha_vantage" and pair_clean in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200", "XAUUSD"]:
                 return None
-            if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
-                params = {
-                    "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
-                    "symbols": api_symbol
-                }
+            if api_name == "fxapi" and PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:  # FXApi reactivated - confirmed working
+                # FXApi requires base and symbols format
+                if pair_clean == "XAUUSD":
+                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
+                    params = {
+                        "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
+                        "base": "USD",
+                        "symbols": "XAU"
+                    }
+                else:
+                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
+                    params = {
+                        "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
+                        "symbols": api_symbol
+                    }
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
-                            if "rates" in data and api_symbol in data["rates"]:
-                                price = float(data["rates"][api_symbol])
-                                return price
+                            if "rates" in data:
+                                # For XAUUSD, look for XAU in rates
+                                if pair_clean == "XAUUSD" and "XAU" in data["rates"]:
+                                    price = float(data["rates"]["XAU"])
+                                    return 1.0 / price  # Convert to USD per XAU
+                                elif api_symbol in data["rates"]:
+                                    price = float(data["rates"][api_symbol])
+                                    return price
                         elif response.status == 429:
                             await self.log_api_limit_warning("FXApi", "Rate limit exceeded - switching to backup API")
                         elif response.status == 403:
                             await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid")
             
             elif api_name == "twelve_data" and PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
-                params = {
-                    "symbol": api_symbol,
-                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
-                }
+                # Use forex endpoint for currency pairs
+                if pair_clean == "XAUUSD":
+                    url = "https://api.twelvedata.com/quote"
+                    params = {
+                        "symbol": "XAU/USD",
+                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
+                    }
+                else:
+                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
+                    params = {
+                        "symbol": api_symbol,
+                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
+                    }
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
@@ -1857,6 +2030,9 @@ class TradingBot(commands.Bot):
                             data = await response.json()
                             if "price" in data:
                                 price = float(data["price"])
+                                return price
+                            elif "close" in data:
+                                price = float(data["close"])
                                 return price
                             elif "message" in data and "limit" in data["message"].lower():
                                 await self.log_api_limit_warning("Twelve Data", f"Usage limit: {data['message']}")
@@ -1867,21 +2043,24 @@ class TradingBot(commands.Bot):
                 url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
                 # Handle special cases for Alpha Vantage
                 if pair_clean == "XAUUSD":
-                    from_currency = "XAU"
-                    to_currency = "USD"
+                    # Use GLOBAL_QUOTE for GLD (Gold ETF) as proxy
+                    params = {
+                        "function": "GLOBAL_QUOTE",
+                        "symbol": "GLD",
+                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
+                    }
                 elif len(api_symbol) == 6:  # Standard currency pairs like EURUSD
                     from_currency = api_symbol[:3]
                     to_currency = api_symbol[3:]
+                    params = {
+                        "function": "CURRENCY_EXCHANGE_RATE",
+                        "from_currency": from_currency,
+                        "to_currency": to_currency,
+                        "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
+                    }
                 else:
                     # Skip if symbol format doesn't match expected pattern
                     return None
-                    
-                params = {
-                    "function": "CURRENCY_EXCHANGE_RATE",
-                    "from_currency": from_currency,
-                    "to_currency": to_currency,
-                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
-                }
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
@@ -1891,13 +2070,25 @@ class TradingBot(commands.Bot):
                                 rate_data = data["Realtime Currency Exchange Rate"]
                                 if "5. Exchange Rate" in rate_data:
                                     return float(rate_data["5. Exchange Rate"])
+                            elif "Global Quote" in data and pair_clean == "XAUUSD":
+                                quote_data = data["Global Quote"]
+                                if "05. price" in quote_data:
+                                    # GLD ETF price, approximate conversion to XAU/USD
+                                    gld_price = float(quote_data["05. price"])
+                                    # GLD represents ~1/10th of an ounce, so multiply by ~100 for rough XAU price
+                                    estimated_xau_price = gld_price * 100
+                                    return estimated_xau_price
                             elif "Note" in data and "call frequency" in data["Note"]:
                                 await self.log_api_limit_warning("Alpha Vantage", "Daily limit reached - switching to backup")
                         elif response.status == 429:
                             await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
             
-            elif api_name == "fmp" and PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{api_symbol}"
+            elif False:  # FMP disabled - legacy endpoints no longer supported
+                # Use v4 endpoint for current quote
+                if pair_clean == "XAUUSD":
+                    url = "https://financialmodelingprep.com/api/v4/price/XAUUSD"
+                else:
+                    url = f"https://financialmodelingprep.com/api/v4/price/{api_symbol}"
                 params = {
                     "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
                 }
@@ -1906,8 +2097,12 @@ class TradingBot(commands.Bot):
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
                         if response.status == 200:
                             data = await response.json()
+                            # Handle both v3 (list) and v4 (object) response formats
                             if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
                                 price = float(data[0]["price"])
+                                return price
+                            elif isinstance(data, dict) and "price" in data:
+                                price = float(data["price"])
                                 return price
                             elif isinstance(data, dict) and "Error Message" in data:
                                 if "limit" in data["Error Message"].lower():
@@ -2287,7 +2482,7 @@ class TradingBot(commands.Bot):
             print(f"Error checking price levels for {message_id}: {e}")
             return False
 
-    async def handle_tp_hit(self, message_id: str, trade_data: Dict, tp_level: str):
+    async def handle_tp_hit(self, message_id: str, trade_data: Dict, tp_level: str, offline_hit: bool = False):
         """Handle when a TP level is hit"""
         try:
             # Update trade data
@@ -2309,12 +2504,12 @@ class TradingBot(commands.Bot):
                 await self.remove_trade_from_db(message_id)
             
             # Send notification
-            await self.send_tp_notification(message_id, trade_data, tp_level)
+            await self.send_tp_notification(message_id, trade_data, tp_level, offline_hit)
             
         except Exception as e:
             print(f"Error handling TP hit: {e}")
 
-    async def handle_sl_hit(self, message_id: str, trade_data: Dict):
+    async def handle_sl_hit(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
         """Handle when SL is hit"""
         try:
             trade_data["status"] = "closed (sl hit)"
@@ -2323,12 +2518,12 @@ class TradingBot(commands.Bot):
             await self.remove_trade_from_db(message_id)
             
             # Send notification
-            await self.send_sl_notification(message_id, trade_data)
+            await self.send_sl_notification(message_id, trade_data, offline_hit)
             
         except Exception as e:
             print(f"Error handling SL hit: {e}")
 
-    async def handle_breakeven_hit(self, message_id: str, trade_data: Dict):
+    async def handle_breakeven_hit(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
         """Handle when price returns to breakeven after TP2"""
         try:
             trade_data["status"] = "closed (breakeven after tp2)"
@@ -2337,12 +2532,12 @@ class TradingBot(commands.Bot):
             await self.remove_trade_from_db(message_id)
             
             # Send breakeven notification
-            await self.send_breakeven_notification(message_id, trade_data)
+            await self.send_breakeven_notification(message_id, trade_data, offline_hit)
             
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
 
-    async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str):
+    async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str, offline_hit: bool = False):
         """Send TP hit notification with random message selection"""
         import random
         
@@ -2400,12 +2595,16 @@ class TradingBot(commands.Bot):
                 # Fallback to original message
                 notification = f"@everyone **{tp_level.upper()} HAS BEEN HIT!** 🎯"
             
+            # Add offline hit indication if applicable
+            if offline_hit:
+                notification += "\n⚠️ *This level was hit while the bot was offline - notification sent upon restart*"
+            
             await message.reply(notification)
             
         except Exception as e:
             print(f"Error sending TP notification: {e}")
 
-    async def send_sl_notification(self, message_id: str, trade_data: Dict):
+    async def send_sl_notification(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
         """Send SL hit notification with random message selection"""
         import random
         
@@ -2426,16 +2625,24 @@ class TradingBot(commands.Bot):
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
             notification = random.choice(sl_messages)
             
+            # Add offline hit indication if applicable
+            if offline_hit:
+                notification += "\n⚠️ *This level was hit while the bot was offline - notification sent upon restart*"
+            
             await message.reply(notification)
             
         except Exception as e:
             print(f"Error sending SL notification: {e}")
 
-    async def send_breakeven_notification(self, message_id: str, trade_data: Dict):
+    async def send_breakeven_notification(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
         """Send breakeven hit notification"""
         try:
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
             notification = f"This pair reversed to breakeven after we hit TP2. As we stated, we had already moved our SL to breakeven, so we were out safe.\n@everyone"
+            
+            # Add offline hit indication if applicable
+            if offline_hit:
+                notification += "\n⚠️ *This level was hit while the bot was offline - notification sent upon restart*"
             
             await message.reply(notification)
             
@@ -4915,34 +5122,7 @@ async def invite_tracking_command(interaction: discord.Interaction, action: str,
 
 
 # ===== PRICE TRACKING COMMANDS =====
-
-@bot.tree.command(name="pricetracking", description="[OWNER ONLY] Toggle live price tracking system on/off")
-@app_commands.describe(enabled="Enable or disable the price tracking system")
-async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool):
-    """Toggle price tracking system"""
-    if not await owner_check(interaction):
-        return
-    
-    PRICE_TRACKING_CONFIG["enabled"] = enabled
-    status = "enabled" if enabled else "disabled"
-    
-    embed = discord.Embed(
-        title="🔄 Price Tracking System",
-        description=f"Live price tracking has been **{status}**",
-        color=discord.Color.green() if enabled else discord.Color.red()
-    )
-    
-    if enabled:
-        embed.add_field(
-            name="📊 Configuration",
-            value=f"• **Monitoring**: Signals containing '{PRICE_TRACKING_CONFIG['signal_keyword']}'\n"
-                  f"• **From**: Owner and bot messages only\n"
-                  f"• **Excluding**: Channel ID {PRICE_TRACKING_CONFIG['excluded_channel_id']}\n"
-                  f"• **Check Interval**: {PRICE_TRACKING_CONFIG['check_interval']} seconds (3m 45s)",
-            inline=False
-        )
-    
-    await interaction.response.send_message(embed=embed)
+# /pricetracking command removed - price tracking now permanently active 24/7
 
 # ===== ACTIVE TRADES COMMAND GROUP =====
 active_trades_group = app_commands.Group(name="activetrades", description="[OWNER ONLY] Manage tracked trading signals")
@@ -5033,105 +5213,7 @@ async def active_trades_view(interaction: discord.Interaction):
     
     await interaction.followup.send(embed=embed)
 
-@active_trades_group.command(name="remove", description="Remove a tracked trading signal (also auto-removes when messages are deleted)")
-@app_commands.describe(trade_id="Select the trade to remove from tracking")
-async def active_trades_remove(interaction: discord.Interaction, trade_id: str):
-    """Remove a specific trade from tracking"""
-    if not await owner_check(interaction):
-        return
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    # Get active trades to verify the trade exists
-    active_trades = await bot.get_active_trades_from_db()
-    
-    if not active_trades:
-        embed = discord.Embed(
-            title="❌ Remove Trade Signal",
-            description="No active trades found to remove.",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed)
-        return
-    
-    # Find the trade by partial message ID match
-    matching_trades = {k: v for k, v in active_trades.items() if k.startswith(trade_id) or trade_id in k}
-    
-    if not matching_trades:
-        embed = discord.Embed(
-            title="❌ Remove Trade Signal",
-            description=f"No trade found matching ID: `{trade_id}`",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed)
-        return
-    
-    if len(matching_trades) > 1:
-        embed = discord.Embed(
-            title="❌ Remove Trade Signal",
-            description=f"Multiple trades match `{trade_id}`. Please be more specific:\n" + 
-                       "\n".join([f"• `{k[:12]}...` - {v['pair']} {v['action']}" for k, v in list(matching_trades.items())[:5]]),
-            color=discord.Color.orange()
-        )
-        await interaction.followup.send(embed=embed)
-        return
-    
-    # Get the exact match
-    message_id, trade_data = list(matching_trades.items())[0]
-    
-    # Remove from memory and database
-    success = await bot.remove_trade_from_tracking(message_id)
-    
-    if success:
-        embed = discord.Embed(
-            title="✅ Trade Signal Removed",
-            description=f"**{trade_data['pair']} {trade_data['action']}** has been removed from tracking.\n\n"
-                       f"• **Entry:** ${trade_data['entry']:.5f}\n"
-                       f"• **Message ID:** `{message_id[:12]}...`\n\n"
-                       f"*This signal will no longer trigger SL/TP notifications.*",
-            color=discord.Color.green()
-        )
-    else:
-        embed = discord.Embed(
-            title="⚠️ Partial Removal",
-            description=f"**{trade_data['pair']} {trade_data['action']}** was removed from memory but may still exist in database.\n\n"
-                       f"The signal should no longer trigger notifications.",
-            color=discord.Color.orange()
-        )
-    
-    await interaction.followup.send(embed=embed)
-    
-    # Log the removal
-    await bot.log_to_discord(f"🗑️ Owner manually removed trade signal: {trade_data['pair']} {trade_data['action']} (Entry: ${trade_data['entry']:.5f})")
-
-# Add autocomplete for trade selection
-@active_trades_remove.autocomplete('trade_id')
-async def trade_id_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """Provide autocomplete options for trade IDs"""
-    if interaction.user.id != OWNER_ID:
-        return []
-    
-    try:
-        # Get active trades
-        active_trades = await bot.get_active_trades_from_db()
-        
-        if not active_trades:
-            return [app_commands.Choice(name="No active trades", value="none")]
-        
-        choices = []
-        for message_id, trade_data in list(active_trades.items())[:15]:  # Limit to 15 for autocomplete
-            # Create readable choice name
-            choice_name = f"{trade_data['pair']} {trade_data['action']} - Entry: ${trade_data['entry']:.5f} ({message_id[:8]}...)"
-            choice_value = message_id[:12]  # Use first 12 chars of message ID
-            choices.append(app_commands.Choice(name=choice_name[:100], value=choice_value))
-        
-        # Filter by current input if provided
-        if current:
-            choices = [c for c in choices if current.lower() in c.name.lower() or current.lower() in c.value.lower()]
-        
-        return choices[:25]  # Discord limit
-    except Exception:
-        return [app_commands.Choice(name="Error loading trades", value="error")]
+# Manual remove command removed - automatic cleanup handles deleted messages
 
 # Register the command group
 bot.tree.add_command(active_trades_group)
