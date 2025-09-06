@@ -1069,6 +1069,21 @@ class TradingBot(commands.Bot):
         except Exception as e:
             print(f"❌ Error during invite backtracking: {e}")
 
+    async def setup_owner_permissions(self):
+        """Set up command permissions to make commands visible only to bot owner"""
+        if not BOT_OWNER_USER_ID:
+            print("⚠️ BOT_OWNER_USER_ID not set - skipping permission setup")
+            return
+
+        try:
+            owner_id = int(BOT_OWNER_USER_ID)
+            print(f"🔒 Setting up owner permissions for user ID: {owner_id}")
+            print("✅ Bot commands restricted to authorized owner only")
+        except ValueError:
+            print("❌ Invalid BOT_OWNER_USER_ID - must be a valid Discord user ID")
+        except Exception as e:
+            print(f"❌ Error setting up owner permissions: {e}")
+
     async def on_ready(self):
         """Called when bot is ready and connected to Discord"""
         print("🎉 DISCORD BOT READY EVENT TRIGGERED!")
@@ -3489,78 +3504,26 @@ def get_remaining_time_display(member_id: str) -> str:
         print(f"Error calculating time for member {member_id}: {str(e)}")
         return "ERROR"
 
-    async def setup_owner_permissions(self):
-        """Set up command permissions to make commands visible only to bot owner"""
-        if not BOT_OWNER_USER_ID:
-            print("⚠️ BOT_OWNER_USER_ID not set - skipping permission setup")
-            return
 
-        try:
-            owner_id = int(BOT_OWNER_USER_ID)
-            print(f"🔒 Setting up{version_short}```",
-                    inline=False
-                )
+# Create bot instance
+bot = TradingBot()
 
-            # Add table info
-            if tables:
-                table_list = []
-                for table in tables:
-                    table_name = table['tablename']
-                    count = record_counts.get(table_name, "Unknown")
-                    table_list.append(f"• {table_name} ({count} records)")
 
-                if len(table_list) > 10:
-                    table_text = "\n".join(table_list[:10]) + f"\n... and {len(table_list) - 10} more"
-                else:
-                    table_text = "\n".join(table_list)
-
-                embed.add_field(
-                    name="📋 Tables",
-                    value=table_text,
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="📋 Tables",
-                    value="No tables found",
-                    inline=False
-                )
-
-            # Add performance test
-            start_time = current_time
-            await conn.fetchval('SELECT 1')
-            end_time = await conn.fetchval('SELECT NOW()')
-
-            embed.add_field(
-                name="⚡ Performance",
-                value="Database responding normally",
-                inline=False
-            )
-
-            embed.set_footer(text="Database status check completed")
-
-            await interaction.followup.send(embed=embed)
-
-    except Exception as e:
-        embed = discord.Embed(
-            title="📊 Database Status",
-            description="❌ **Database Connection Error**",
-            color=discord.Color.red()
-        )
-
-        embed.add_field(
-            name="❌ Error Details",
-            value=f"```{str(e)[:500]}```",
-            inline=False
-        )
-
-        embed.add_field(
-            name="💡 Troubleshooting",
-            value="• Check DATABASE_URL environment variable\n• Verify database service is running\n• Check network connectivity",
-            inline=False
-        )
-
-        await interaction.followup.send(embed=embed)
+async def owner_check(interaction: discord.Interaction) -> bool:
+    """Check if the user is the bot owner"""
+    if not BOT_OWNER_USER_ID:
+        await interaction.response.send_message("❌ Bot owner not configured - commands disabled for security.", ephemeral=True)
+        return False
+    
+    try:
+        owner_id = int(BOT_OWNER_USER_ID)
+        if interaction.user.id != owner_id:
+            await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+            return False
+        return True
+    except ValueError:
+        await interaction.response.send_message("❌ Bot owner configuration error.", ephemeral=True)
+        return False
 
 
 @bot.tree.command(name="pricetest", description="Test price retrieval for a trading pair")
@@ -3623,4 +3586,12 @@ async def price_test_command(interaction: discord.Interaction, pair: str):
 
         embed.add_field(
             name="❌ Error",
-            value=f"```{str(e)[:500]}
+            value=f"```{str(e)[:500]}```",
+            inline=False
+        )
+
+        await interaction.followup.send(embed=embed)
+
+
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
