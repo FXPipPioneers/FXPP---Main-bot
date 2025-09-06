@@ -117,23 +117,23 @@ PRICE_TRACKING_CONFIG = {
         "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY", ""),
         "twelve_data_key": os.getenv("TWELVE_DATA_KEY", ""),
         "fmp_key": os.getenv("FMP_KEY", ""),
-        # New APIs - 9 additional APIs for maximum accuracy (no hardcoded keys for security)
-        "exchangerate_api_key": os.getenv("EXCHANGERATE_API_KEY", ""),
-        "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", ""),
-        "fixer_api_key": os.getenv("FIXER_API_KEY", ""),
-        "openexchange_key": os.getenv("OPENEXCHANGE_KEY", ""),
-        "currencyapi_key": os.getenv("CURRENCYAPI_KEY", ""),
-        "apilayer_key": os.getenv("APILAYER_KEY", ""),
-        "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", ""),
-        "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", ""),
-        "polygon_api_key": os.getenv("POLYGON_API_KEY", ""),
+        # New APIs - 9 additional APIs for maximum accuracy
+        "exchangerate_api_key": os.getenv("EXCHANGERATE_API_KEY", "e7961dce2a6114a3ea275369"),
+        "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", "8b43e232fedef91d9016319453ef2e51"),
+        "fixer_api_key": os.getenv("FIXER_API_KEY", "310c368a6741a5878cf68dc68b1f8dbf"),
+        "openexchange_key": os.getenv("OPENEXCHANGE_KEY", "06a8e5a1084b49a6a59d72ee2be7ff76"),
+        "currencyapi_key": os.getenv("CURRENCYAPI_KEY", "fxa_live_dTcdKCjcR6vJdzCupMTkwn360zMOty161rbRZgrX"),
+        "apilayer_key": os.getenv("APILAYER_KEY", "x3a42GjuwuvuIv5PgiSymOjd9hPq504Q"),
+        "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", "199125298c6f4d76a87525a3e22f8812"),
+        "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", "kexWz1vIQR1BY0hKTOCy4CSTybvODwlu"),
+        "polygon_api_key": os.getenv("POLYGON_API_KEY", "KM4tjuwCglwp5ySPp2_l7Xh85Pe8HifX")
     },
     "api_endpoints": {
         "fxapi": "https://fxapi.com/api/latest",
         "alpha_vantage": "https://www.alphavantage.co/query",
         "twelve_data": "https://api.twelvedata.com/price",
         "fmp": "https://financialmodelingprep.com/api/v3/quote",
-        # Updated API endpoints - 9 additional sources
+        # New API endpoints - 9 additional sources
         "exchangerate_api": "https://v6.exchangerate-api.com/v6",
         "currencylayer": "https://api.currencylayer.com/live",
         "fixer": "https://data.fixer.io/api/latest",
@@ -142,11 +142,8 @@ PRICE_TRACKING_CONFIG = {
         "apilayer": "https://api.apilayer.com/fixer/latest",
         "abstractapi": "https://exchange-rates.abstractapi.com/v1/live",
         "currencybeacon": "https://api.currencybeacon.com/v1/latest",
-        "polygon": "https://api.polygon.io/v1/conversion",
-        "coinbase": "https://api.coinbase.com/v2/exchange-rates",  # Free, no key needed
-        "fcsapi": "https://fcsapi.com/api-v3/forex/latest"
+        "polygon": "https://api.polygon.io/v1/conversion"
     },
-    "debug_channel_id": "1412344974871105567",  # Channel for price tracking debugging
     "last_price_check": {},  # pair: last_check_timestamp
     "check_interval": 60,  # seconds between price checks (1 minute - optimized for 13 APIs)
     "api_rotation_index": 0  # for rotating through APIs efficiently
@@ -207,21 +204,6 @@ class TradingBot(commands.Bot):
                 print(f"Failed to send log to Discord: {e}")
         # Always print to console as backup
         print(message)
-    
-    async def log_price_debug(self, message: str, embed: discord.Embed = None):
-        """Log price tracking debugging messages to dedicated debug channel"""
-        try:
-            # Get the price debug channel
-            debug_channel_id = PRICE_TRACKING_CONFIG.get("debug_channel_id")
-            if debug_channel_id:
-                channel = self.bot.get_channel(int(debug_channel_id))
-                if channel:
-                    if embed:
-                        await channel.send(message, embed=embed)
-                    else:
-                        await channel.send(f"🔍 **Price Debug**: {message}")
-        except Exception as e:
-            print(f"Failed to log price debug to Discord: {e}")
     
     async def close(self):
         """Cleanup when bot shuts down"""
@@ -891,26 +873,7 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
-                # Price tracking configuration table for persistent 24/7 operation
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS price_tracking_config (
-                        id INTEGER PRIMARY KEY DEFAULT 1,
-                        enabled BOOLEAN DEFAULT TRUE,
-                        check_interval INTEGER DEFAULT 60,
-                        api_rotation_index INTEGER DEFAULT 0,
-                        last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        CONSTRAINT single_config_row UNIQUE (id)
-                    )
-                ''')
-
-                # Initialize price tracking config if not exists (always enabled for 24/7 operation)
-                await conn.execute('''
-                    INSERT INTO price_tracking_config (id, enabled, check_interval, api_rotation_index) 
-                    VALUES (1, true, 60, 0)
-                    ON CONFLICT (id) DO NOTHING
-                ''')
-
-            print("✅ Database tables initialized (including persistent price tracking config)")
+            print("✅ Database tables initialized")
 
             # Load existing config from database
             await self.load_config_from_db()
@@ -1013,43 +976,10 @@ class TradingBot(commands.Bot):
                         "dm_14_sent": row['dm_14_sent']
                     }
 
-                # Load price tracking configuration
-                price_config_row = await conn.fetchrow('SELECT * FROM price_tracking_config WHERE id = 1')
-                if price_config_row:
-                    PRICE_TRACKING_CONFIG["enabled"] = price_config_row['enabled']
-                    PRICE_TRACKING_CONFIG["check_interval"] = price_config_row['check_interval']
-                    PRICE_TRACKING_CONFIG["api_rotation_index"] = price_config_row['api_rotation_index']
-                    print(f"✅ Price tracking loaded: enabled={price_config_row['enabled']}, interval={price_config_row['check_interval']}s")
-                else:
-                    # Ensure price tracking is always enabled for 24/7 operation
-                    PRICE_TRACKING_CONFIG["enabled"] = True
-                    print("✅ Price tracking defaulted to enabled (24/7 operation)")
-
                 print("✅ Configuration loaded from database")
 
         except Exception as e:
             print(f"❌ Failed to load config from database: {e}")
-
-    async def save_price_tracking_config(self):
-        """Save price tracking configuration to database for persistence"""
-        if not self.db_pool:
-            return
-        
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.execute('''
-                    UPDATE price_tracking_config 
-                    SET enabled = $1, check_interval = $2, api_rotation_index = $3, last_updated = NOW()
-                    WHERE id = 1
-                ''', 
-                PRICE_TRACKING_CONFIG["enabled"],
-                PRICE_TRACKING_CONFIG["check_interval"], 
-                PRICE_TRACKING_CONFIG["api_rotation_index"])
-                
-                await self.log_to_discord(f"💾 Price tracking config saved to database: enabled={PRICE_TRACKING_CONFIG['enabled']}")
-                
-        except Exception as e:
-            print(f"❌ Failed to save price tracking config to database: {e}")
 
     async def setup_hook(self):
         # Initialize aiohttp client session (fixes unclosed client session errors)
@@ -1918,11 +1848,6 @@ class TradingBot(commands.Bot):
         # Normalize pair format for different APIs
         pair_clean = pair.replace("/", "").upper()
         
-        # Exclude US100 and GER40 from all price tracking
-        if pair_clean in ["US100", "GER40", "GER30", "NAS100"]:
-            await self.log_price_debug(f"⚠️ Skipping price tracking for {pair_clean} - excluded by user preference")
-            return None
-        
         # For regular monitoring, use only 1-2 APIs to conserve limits
         # For initial signal verification, use all APIs for maximum accuracy
         if use_all_apis:
@@ -1932,10 +1857,9 @@ class TradingBot(commands.Bot):
     
     async def get_price_optimized_rotation(self, pair_clean: str) -> Optional[float]:
         """Get price using smart API rotation to minimize free tier usage"""
-        # Define API priority order (most reliable first)
-        api_order = ["fxapi", "exchangerate_api", "currencyapi", "twelve_data", 
-                     "abstractapi", "currencylayer", "fixer", "openexchange", 
-                     "alpha_vantage", "apilayer", "currencybeacon", "polygon", "fmp"]
+        # Define API priority order (most reliable first) - all 13 APIs for maximum redundancy
+        api_order = ["fxapi", "exchangerate_api", "currencyapi", "twelve_data", "abstractapi", "currencylayer", 
+                     "fixer", "openexchange", "alpha_vantage", "apilayer", "currencybeacon", "polygon", "fmp"]
         
         # Rotate through APIs to distribute load
         start_index = PRICE_TRACKING_CONFIG["api_rotation_index"] % len(api_order)
@@ -1966,8 +1890,7 @@ class TradingBot(commands.Bot):
                 "UK100": ["UK100", "UKX", "FTSE"],              # FTSE 100
                 "JPN225": ["JPN225", "N225", "NKY"],             # Nikkei 225
                 "AUS200": ["AUS200", "ASX", "XJO"],             # ASX 200
-                "XAUUSD": ["XAU", "GOLD", "XAUUSD"],             # Gold/USD pairs
-                "BTCUSD": ["BTC", "BITCOIN", "BTCUSD"]          # Bitcoin/USD pairs
+                "XAUUSD": ["XAU", "GOLD", "XAUUSD"]             # Gold/USD pairs
             },
             "twelve_data": {
                 "US100": ["QQQ", "NASDAQ", "USTEC", "NQ"],       # Nasdaq 100 alternatives (QQQ ETF available on free tier)
@@ -1978,15 +1901,13 @@ class TradingBot(commands.Bot):
                 "UK100": ["UKX", "FTSE"],                       # FTSE 100
                 "JPN225": ["N225", "NKY"],                      # Nikkei 225
                 "AUS200": ["XJO", "AXJO"],                      # ASX 200
-                "XAUUSD": ["XAU/USD", "GOLD", "GLD"],           # Gold/USD pairs - XAU/USD works
-                "BTCUSD": ["BTC/USD", "BTCUSD", "BTC"]
+                "XAUUSD": ["XAU/USD", "GOLD"]         # Gold/USD pairs - XAU/USD works
             },
             "alpha_vantage": {
                 # Alpha Vantage doesn't support indices through currency exchange rate
                 # These symbols won't work with the current implementation
                 # We'll skip Alpha Vantage for indices but include XAUUSD
-                "XAUUSD": ["GLD", "GOLD"],                      # Gold ETF as proxy for XAU/USD
-                "BTCUSD": ["BTC", "BTCUSD"]
+                "XAUUSD": ["GLD"]                       # Gold ETF as proxy for XAU/USD
             },
             "fmp": {
                 "US100": ["QQQ", "^NDX", "NDAQ", "ONEQ"],       # Nasdaq 100 ETF and index symbols
@@ -1997,20 +1918,7 @@ class TradingBot(commands.Bot):
                 "UK100": ["^UKX", "^FTSE"],                    # FTSE 100
                 "JPN225": ["^N225", "^NKY"],                   # Nikkei 225
                 "AUS200": ["^AXJO", "^XJO"],                   # ASX 200
-                "XAUUSD": ["XAUUSD", "GC=F", "GOLD"],           # Gold/USD pairs
-                "BTCUSD": ["BTCUSD", "BTC", "BITCOIN"]
-            },
-            # Add new APIs for better coverage
-            "binance": {
-                "XAUUSD": ["PAXGUSD", "XAUUSDT"],              # Binance gold pairs
-                "BTCUSD": ["BTCUSDT", "BTCUSD", "BTCBUSD"]
-            },
-            "coinbase": {
-                "XAUUSD": ["XAU", "GOLD"],
-                "BTCUSD": ["BTC", "BITCOIN"]
-            },
-            "metalpriceapi": {
-                "XAUUSD": ["XAU", "GOLD", "AU"]
+                "XAUUSD": ["XAUUSD", "GC=F", "GOLD"]           # Gold/USD pairs
             }
         }
         
@@ -2385,249 +2293,127 @@ class TradingBot(commands.Bot):
                                     return (bid + ask) / 2
                             elif isinstance(data, dict) and "price" in data:
                                 return float(data["price"])
-            
-            # === BINANCE === (Free crypto API)
-            elif api_name == "binance":
-                if pair_clean in ["BTCUSD", "BTCUSDT"]:
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['binance']}"
-                    api_symbol = self.get_api_symbol("binance", pair_clean)
-                    params = {"symbol": api_symbol}
-                    
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                if "price" in data:
-                                    return float(data["price"])
-            
-            # === COINBASE === (Free API, no key needed)
-            elif api_name == "coinbase":
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['coinbase']}"
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "data" in data and "rates" in data["data"]:
-                                rates = data["data"]["rates"]
-                                if pair_clean == "BTCUSD" and "BTC" in rates:
-                                    return float(rates["BTC"])
-                                elif pair_clean == "XAUUSD" and "XAU" in rates:
-                                    xau_rate = float(rates["XAU"])
-                                    return 1.0 / xau_rate
-            
-            # === METALPRICEAPI === (Free metals API)
-            elif api_name == "metalpriceapi" and PRICE_TRACKING_CONFIG["api_keys"]["metalpriceapi_key"]:
-                if pair_clean == "XAUUSD":
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['metalpriceapi']}"
-                    params = {
-                        "api_key": PRICE_TRACKING_CONFIG["api_keys"]["metalpriceapi_key"],
-                        "base": "USD",
-                        "currencies": "XAU"
-                    }
-                    
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                if "rates" in data and "XAU" in data["rates"]:
-                                    xau_rate = float(data["rates"]["XAU"])
-                                    return 1.0 / xau_rate
         
         except Exception as e:
             # Log errors for debugging but don't stop API rotation
-            await self.log_price_debug(f"⚠️ API Error ({api_name}) for {pair_clean}: {str(e)[:100]}")
+            await self.log_to_discord(f"⚠️ API Error ({api_name}): {str(e)[:100]}")
         
         return None
     
     async def get_verified_price_all_apis(self, pair_clean: str) -> Optional[float]:
-        """Get price from all APIs for maximum accuracy verification using smart consensus"""
+        """Get price from all APIs for maximum accuracy verification (used sparingly)"""
         # Collect prices from multiple APIs for cross-verification
         prices = {}
         api_errors = {}
         
-        await self.log_price_debug(f"🔄 Starting consensus price check for {pair_clean}")
-        
-        # Try all available APIs to get comprehensive price data
-        all_apis = ["binance", "coinbase", "fxapi", "exchangerate_api", "currencyapi", "twelve_data", 
-                   "metalpriceapi", "abstractapi", "currencylayer", "fixer", "openexchange", 
-                   "alpha_vantage", "apilayer", "currencybeacon", "polygon", "fmp"]
-        
-        # Collect prices from all APIs
-        for api_name in all_apis:
-            try:
-                price = await self.get_price_from_single_api(api_name, pair_clean)
-                if price is not None and price > 0:
-                    prices[api_name] = price
-                    await self.log_price_debug(f"✅ {api_name}: ${price:.6f}")
-                else:
-                    await self.log_price_debug(f"❌ {api_name}: No valid price")
-            except Exception as e:
-                api_errors[api_name] = str(e)
-                await self.log_price_debug(f"⚠️ {api_name}: Error - {str(e)[:50]}")
-        
-        # Apply smart consensus logic
-        if len(prices) >= 3:  # Need at least 3 prices for consensus
-            return await self.calculate_consensus_price(pair_clean, prices)
-        elif len(prices) >= 1:
-            # If we have fewer than 3 prices, use the most reliable one
-            api_name, price = next(iter(prices.items()))
-            await self.log_price_debug(f"📊 Using single source {api_name}: ${price:.6f}")
-            return price
-        else:
-            await self.log_price_debug(f"❌ No valid prices found for {pair_clean}")
-            return None
-    
-    async def calculate_consensus_price(self, pair_clean: str, prices: dict) -> Optional[float]:
-        """Calculate consensus price using smart logic to identify most accurate range"""
-        if not prices:
-            return None
-        
-        price_values = list(prices.values())
-        price_values.sort()
-        
-        await self.log_price_debug(f"📊 Consensus analysis for {pair_clean}: {len(prices)} APIs responded")
-        
-        # Group prices by similarity (within 1% of each other)
-        price_groups = []
-        tolerance = 0.01  # 1% tolerance
-        
-        for price in price_values:
-            added_to_group = False
-            for group in price_groups:
-                group_avg = sum(group) / len(group)
-                if abs(price - group_avg) / group_avg <= tolerance:
-                    group.append(price)
-                    added_to_group = True
-                    break
-            
-            if not added_to_group:
-                price_groups.append([price])
-        
-        # Find the largest group (majority consensus)
-        largest_group = max(price_groups, key=len)
-        consensus_count = len(largest_group)
-        
-        # Calculate the median of the largest group for most accurate price
-        largest_group.sort()
-        if len(largest_group) % 2 == 0:
-            median_idx = len(largest_group) // 2
-            consensus_price = (largest_group[median_idx - 1] + largest_group[median_idx]) / 2
-        else:
-            consensus_price = largest_group[len(largest_group) // 2]
-        
-        # Log the consensus analysis
-        await self.log_price_debug(f"🎯 Consensus for {pair_clean}: {consensus_count}/{len(prices)} APIs agree on ~${consensus_price:.6f}")
-        
-        # Show outliers for debugging
-        outliers = []
-        for price in price_values:
-            if price not in largest_group:
-                outliers.append(price)
-        
-        if outliers:
-            await self.log_price_debug(f"🚨 Outliers detected: {[f'${p:.6f}' for p in outliers]}")
-        
-        # Only accept consensus if we have at least 3 APIs agreeing or if consensus is majority
-        if consensus_count >= 3 or consensus_count >= len(prices) * 0.6:
-            await self.log_price_debug(f"✅ Using consensus price: ${consensus_price:.6f}")
-            return consensus_price
-        else:
-            # Fall back to median of all prices if no clear consensus
-            median_price = price_values[len(price_values) // 2]
-            await self.log_price_debug(f"⚖️ No clear consensus, using median: ${median_price:.6f}")
-            return median_price
-    
-    async def log_api_limit_warning(self, api_name: str, message: str):
-        """Log API limit warnings to Discord and console"""
-        warning_msg = f"🚨 **{api_name} API Limit Warning**\n{message}\n\n" + \
-                     f"**Action Required:**\n" + \
-                     f"• Check your {api_name} dashboard for usage details\n" + \
-                     f"• Consider upgrading your plan for higher limits\n" + \
-                     f"• Bot will continue using other API sources\n\n" + \
-                     f"**Impact:** Price tracking accuracy may be reduced if multiple APIs are limited."
-        
-        await self.log_to_discord(warning_msg)
-        print(f"API LIMIT WARNING: {api_name} - {message}")
-
-    def parse_signal_message(self, content: str) -> Optional[Dict]:
-        """Parse a trading signal message to extract trade data"""
+        # Try FXApi first
         try:
-            lines = content.split('\n')
-            trade_data = {
-                "pair": None,
-                "action": None,
-                "entry": None,
-                "tp1": None,
-                "tp2": None,
-                "tp3": None,
-                "sl": None,
-                "status": "active",
-                "tp_hits": [],
-                "breakeven_active": False
-            }
-            
-            # Find pair from "Trade Signal For: PAIR"
-            for line in lines:
-                if "Trade Signal For:" in line:
-                    parts = line.split("Trade Signal For:")
-                    if len(parts) > 1:
-                        trade_data["pair"] = parts[1].strip()
-                        break
-            
-            # Extract action from "Entry Type: Buy execution" or "Entry Type: Sell execution"
-            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
-            if entry_type_match:
-                trade_data["action"] = entry_type_match.group(1).upper()
-            else:
-                # Fallback to old format detection
-                for line in lines:
-                    if "BUY" in line.upper() or "SELL" in line.upper():
-                        if "BUY" in line.upper():
-                            trade_data["action"] = "BUY"
-                        else:
-                            trade_data["action"] = "SELL"
-                        break
-            
-            # Extract entry price from "Entry Price: $3473.50" (handles $ symbol)
-            entry_match = re.search(r'Entry Price:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
-            if entry_match:
-                trade_data["entry"] = float(entry_match.group(1))
-            else:
-                # Fallback to old format "Entry: price"
-                entry_match = re.search(r'Entry[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
-                if entry_match:
-                    trade_data["entry"] = float(entry_match.group(1))
-            
-            # Extract TP levels with various formats
-            # TP1: $3505.76 format or Take Profit 1: $3505.76
-            tp1_match = re.search(r'(?:TP\s*1|Take Profit 1)[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
-            if tp1_match:
-                trade_data["tp1"] = float(tp1_match.group(1))
-            
-            tp2_match = re.search(r'(?:TP\s*2|Take Profit 2)[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
-            if tp2_match:
-                trade_data["tp2"] = float(tp2_match.group(1))
-            
-            tp3_match = re.search(r'(?:TP\s*3|Take Profit 3)[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
-            if tp3_match:
-                trade_data["tp3"] = float(tp3_match.group(1))
-            
-            # Extract SL with various formats
-            # SL: $3439.96 format or Stop Loss: $3439.96
-            sl_match = re.search(r'(?:SL|Stop Loss)[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
-            if sl_match:
-                trade_data["sl"] = float(sl_match.group(1))
-            
-            # Basic validation
-            if trade_data["pair"] and trade_data["action"] and trade_data["entry"]:
-                return trade_data
-            else:
-                return None
+            if PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
+                api_symbol = self.get_api_symbol("fxapi", pair_clean)
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
+                params = {
+                    "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
+                    "symbols": api_symbol
+                }
                 
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "rates" in data and api_symbol in data["rates"]:
+                                prices["fxapi"] = float(data["rates"][api_symbol])
+                        elif response.status == 429:
+                            api_errors["fxapi"] = "rate_limit"
+                            await self.log_api_limit_warning("FXApi", "Rate limit exceeded - consider upgrading plan")
+                        elif response.status == 403:
+                            api_errors["fxapi"] = "access_denied"
+                            await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid or expired")
         except Exception as e:
-            print(f"Error parsing signal message: {e}")
-            return None
+            api_errors["fxapi"] = str(e)
+        
+        # Try Twelve Data API
+        try:
+            if PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
+                api_symbol = self.get_api_symbol("twelve_data", pair_clean)
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
+                params = {
+                    "symbol": api_symbol,
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "price" in data:
+                                prices["twelve_data"] = float(data["price"])
+                            elif "message" in data and "limit" in data["message"].lower():
+                                api_errors["twelve_data"] = "usage_limit"
+                                await self.log_api_limit_warning("Twelve Data", f"Usage limit reached: {data['message']}")
+                        elif response.status == 429:
+                            api_errors["twelve_data"] = "rate_limit"
+                            await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - upgrade for higher limits")
+        except Exception as e:
+            api_errors["twelve_data"] = str(e)
+        
+        # Try Alpha Vantage API (skip for indices)
+        try:
+            if (PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"] and 
+                pair_clean not in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]):
+                api_symbol = self.get_api_symbol("alpha_vantage", pair_clean)
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
+                params = {
+                    "function": "CURRENCY_EXCHANGE_RATE",
+                    "from_currency": api_symbol[:3],
+                    "to_currency": api_symbol[3:],
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if "Realtime Currency Exchange Rate" in data:
+                                rate_data = data["Realtime Currency Exchange Rate"]
+                                if "5. Exchange Rate" in rate_data:
+                                    prices["alpha_vantage"] = float(rate_data["5. Exchange Rate"])
+                            elif "Note" in data and "call frequency" in data["Note"]:
+                                api_errors["alpha_vantage"] = "frequency_limit"
+                                await self.log_api_limit_warning("Alpha Vantage", "Daily API limit reached - upgrade for unlimited calls")
+                        elif response.status == 429:
+                            api_errors["alpha_vantage"] = "rate_limit"
+                            await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
+        except Exception as e:
+            api_errors["alpha_vantage"] = str(e)
+        
+        # Try Financial Modeling Prep API
+        try:
+            if PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
+                api_symbol = self.get_api_symbol("fmp", pair_clean)
+                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{api_symbol}"
+                params = {
+                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
+                                prices["fmp"] = float(data[0]["price"])
+                            elif isinstance(data, dict) and "Error Message" in data:
+                                if "limit" in data["Error Message"].lower():
+                                    api_errors["fmp"] = "usage_limit"
+                                    await self.log_api_limit_warning("Financial Modeling Prep", f"Usage limit: {data['Error Message']}")
+                        elif response.status == 429:
+                            api_errors["fmp"] = "rate_limit"
+                            await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded - upgrade plan needed")
+        except Exception as e:
+            api_errors["fmp"] = str(e)
+            print(f"FMP API failed for {pair_clean}: {e}")
+        
+        # Verify price accuracy using multiple sources
+        return await self.verify_price_accuracy(pair_clean, prices, api_errors)
     
     async def verify_price_accuracy(self, pair: str, prices: Dict[str, float], api_errors: Dict[str, str]) -> Optional[float]:
         """Verify price accuracy by cross-checking multiple API sources"""
@@ -5521,7 +5307,34 @@ async def invite_tracking_command(interaction: discord.Interaction, action: str,
 
 
 # ===== PRICE TRACKING COMMANDS =====
-# Note: /pricetracking command removed - price tracking now permanently active for 24/7 operation
+
+@bot.tree.command(name="pricetracking", description="[OWNER ONLY] Toggle live price tracking system on/off")
+@app_commands.describe(enabled="Enable or disable the price tracking system")
+async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool):
+    """Toggle price tracking system"""
+    if not await owner_check(interaction):
+        return
+    
+    PRICE_TRACKING_CONFIG["enabled"] = enabled
+    status = "enabled" if enabled else "disabled"
+    
+    embed = discord.Embed(
+        title="🔄 Price Tracking System",
+        description=f"Live price tracking has been **{status}**",
+        color=discord.Color.green() if enabled else discord.Color.red()
+    )
+    
+    if enabled:
+        embed.add_field(
+            name="📊 Configuration",
+            value=f"• **Monitoring**: Signals containing '{PRICE_TRACKING_CONFIG['signal_keyword']}'\n"
+                  f"• **From**: Owner and bot messages only\n"
+                  f"• **Excluding**: Channel ID {PRICE_TRACKING_CONFIG['excluded_channel_id']}\n"
+                  f"• **Check Interval**: {PRICE_TRACKING_CONFIG['check_interval']} seconds (3m 45s)",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed)
 
 # ===== ACTIVE TRADES COMMAND GROUP =====
 active_trades_group = app_commands.Group(name="activetrades", description="[OWNER ONLY] Manage tracked trading signals")
@@ -5705,35 +5518,17 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
     await interaction.response.defer()
     
     try:
-        # Get prices from all APIs to show individual results
-        pair_clean = pair.replace("/", "").upper()
-        prices = {}
-        api_errors = {}
-        
-        # Test all APIs and collect individual prices
-        for api_name in PRICE_TRACKING_CONFIG["api_keys"].keys():
-            if PRICE_TRACKING_CONFIG["api_keys"][api_name]:  # Only test APIs with keys
-                try:
-                    price = await bot.get_price_from_single_api(api_name, pair_clean)
-                    if price is not None:
-                        prices[api_name] = price
-                    else:
-                        api_errors[api_name] = "No price returned"
-                except Exception as e:
-                    api_errors[api_name] = str(e)[:30]
-        
-        # Get consensus price for display
-        consensus_price = await bot.get_verified_price_all_apis(pair_clean) if prices else None
+        price = await bot.get_live_price(pair)
         
         embed = discord.Embed(
             title="💰 Price Test",
-            color=discord.Color.green() if consensus_price else discord.Color.red()
+            color=discord.Color.green() if price else discord.Color.red()
         )
         
-        if consensus_price:
+        if price:
             embed.add_field(
                 name=f"✅ {pair.upper()}",
-                value=f"Current Price: {consensus_price}",
+                value=f"Current Price: **{price}**",
                 inline=False
             )
         else:
@@ -5743,18 +5538,11 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
                 inline=False
             )
             
-        # Show API status with individual prices
+        # Show API status
         api_status = []
         for api_name, api_key in PRICE_TRACKING_CONFIG["api_keys"].items():
-            if api_key:
-                if api_name in prices:
-                    api_status.append(f"✅ {api_name.replace('_', ' ').title()} - ${prices[api_name]:.6f}")
-                elif api_name in api_errors:
-                    api_status.append(f"❌ {api_name.replace('_', ' ').title()} - {api_errors[api_name]}")
-                else:
-                    api_status.append(f"⏳ {api_name.replace('_', ' ').title()} - Testing...")
-            else:
-                api_status.append(f"❌ {api_name.replace('_', ' ').title()}")
+            status = "✅" if api_key else "❌"
+            api_status.append(f"{status} {api_name.replace('_', ' ').title()}")
         
         embed.add_field(
             name="🔑 API Status",
