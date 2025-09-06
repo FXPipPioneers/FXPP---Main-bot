@@ -113,40 +113,22 @@ PRICE_TRACKING_CONFIG = {
     "signal_keyword": "Trade Signal For:",
     "active_trades": {},  # message_id: {trade_data}
     "api_keys": {
-        "fxapi_key": os.getenv("FXAPI_KEY", ""),
-        "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY", ""),
-        "twelve_data_key": os.getenv("TWELVE_DATA_KEY", ""),
-        "fmp_key": os.getenv("FMP_KEY", ""),
-        # New APIs - 9 additional APIs for maximum accuracy
-        "exchangerate_api_key": os.getenv("EXCHANGERATE_API_KEY", "e7961dce2a6114a3ea275369"),
-        "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", "8b43e232fedef91d9016319453ef2e51"),
-        "fixer_api_key": os.getenv("FIXER_API_KEY", "310c368a6741a5878cf68dc68b1f8dbf"),
-        "openexchange_key": os.getenv("OPENEXCHANGE_KEY", "06a8e5a1084b49a6a59d72ee2be7ff76"),
-        "currencyapi_key": os.getenv("CURRENCYAPI_KEY", "fxa_live_dTcdKCjcR6vJdzCupMTkwn360zMOty161rbRZgrX"),
-        "apilayer_key": os.getenv("APILAYER_KEY", "x3a42GjuwuvuIv5PgiSymOjd9hPq504Q"),
-        "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", "199125298c6f4d76a87525a3e22f8812"),
-        "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", "kexWz1vIQR1BY0hKTOCy4CSTybvODwlu"),
-        "polygon_api_key": os.getenv("POLYGON_API_KEY", "KM4tjuwCglwp5ySPp2_l7Xh85Pe8HifX")
+        # Priority order: currencybeacon -> exchangerate_api -> currencylayer -> abstractapi
+        "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", ""),
+        "exchangerate_api_key": os.getenv("EXCHANGERATE_API_KEY", ""),
+        "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", ""),
+        "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", "")
     },
     "api_endpoints": {
-        "fxapi": "https://fxapi.com/api/latest",
-        "alpha_vantage": "https://www.alphavantage.co/query",
-        "twelve_data": "https://api.twelvedata.com/price",
-        "fmp": "https://financialmodelingprep.com/api/v3/quote",
-        # New API endpoints - 9 additional sources
+        "currencybeacon": "https://api.currencybeacon.com/v1/latest",
         "exchangerate_api": "https://v6.exchangerate-api.com/v6",
         "currencylayer": "https://api.currencylayer.com/live",
-        "fixer": "https://data.fixer.io/api/latest",
-        "openexchange": "https://openexchangerates.org/api/latest.json",
-        "currencyapi": "https://api.currencyapi.com/v3/latest",
-        "apilayer": "https://api.apilayer.com/fixer/latest",
-        "abstractapi": "https://exchange-rates.abstractapi.com/v1/live",
-        "currencybeacon": "https://api.currencybeacon.com/v1/latest",
-        "polygon": "https://api.polygon.io/v1/conversion"
+        "abstractapi": "https://exchange-rates.abstractapi.com/v1/live"
     },
+    "api_priority_order": ["currencybeacon", "exchangerate_api", "currencylayer", "abstractapi"],
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 60,  # seconds between price checks (1 minute - optimized for 13 APIs)
-    "api_rotation_index": 0  # for rotating through APIs efficiently
+    "check_interval": 180,  # 3 minutes - optimized calculation for 4 APIs and free tier limits
+    "api_rotation_index": 0  # for tracking which API failed (for debugging)
 }
 
 # Level system configuration
@@ -1856,26 +1838,23 @@ class TradingBot(commands.Bot):
             return await self.get_price_optimized_rotation(pair_clean)
 
     async def get_price_optimized_rotation(self, pair_clean: str) -> Optional[float]:
-        """Get price using smart API rotation to minimize free tier usage"""
-        # Define API priority order (most reliable first) - all 13 APIs for maximum redundancy
-        api_order = ["fxapi", "exchangerate_api", "currencyapi", "twelve_data", "abstractapi", "currencylayer", 
-                     "fixer", "openexchange", "alpha_vantage", "apilayer", "currencybeacon", "polygon", "fmp"]
+        """Get price using priority order to maximize efficiency with free tier limits"""
+        # Use strict priority order: currencybeacon -> exchangerate_api -> currencylayer -> abstractapi
+        api_priority_order = PRICE_TRACKING_CONFIG["api_priority_order"]
 
-        # Rotate through APIs to distribute load
-        start_index = PRICE_TRACKING_CONFIG["api_rotation_index"] % len(api_order)
+        # Try each API in priority order until one succeeds
+        for api_name in api_priority_order:
+            try:
+                price = await self.get_price_from_single_api(api_name, pair_clean)
+                if price is not None:
+                    return price
+            except Exception as e:
+                print(f"⚠️ {api_name} failed for {pair_clean}: {str(e)[:100]}")
+                continue
 
-        # Try 3 APIs max per check (primary + 2 backups) - with 13 APIs we can afford more attempts
-        for i in range(3):
-            api_index = (start_index + i) % len(api_order)
-            api_name = api_order[api_index]
-
-            price = await self.get_price_from_single_api(api_name, pair_clean)
-            if price is not None:
-                # Update rotation for next check
-                PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
-                return price
-
-        return await self.get_verified_price_all_apis(pair_clean)
+        # If all APIs fail, notify user
+        await self.log_to_discord(f"🚨 **ALL APIS FAILED** for {pair_clean}\nAll 4 price APIs are currently unavailable. Please check API keys and limits.")
+        return None
 
     def get_api_symbol(self, api_name: str, pair_clean: str) -> str:
         """Map user-friendly symbols to API-specific symbols"""
@@ -2301,20 +2280,21 @@ class TradingBot(commands.Bot):
         return None
 
     async def get_verified_price_all_apis(self, pair_clean: str) -> Optional[float]:
-        """Get price from all APIs for maximum accuracy verification (used sparingly)"""
-        # Collect prices from multiple APIs for cross-verification
+        """Get price from all 4 selected APIs for cross-verification"""
+        # Collect prices from the 4 selected APIs for cross-verification
         prices = {}
         api_errors = {}
 
-        # Try FXApi first
-        try:
-            if PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"]:
-                api_symbol = self.get_api_symbol("fxapi", pair_clean)
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fxapi']}"
-                params = {
-                    "access_key": PRICE_TRACKING_CONFIG["api_keys"]["fxapi_key"],
-                    "symbols": api_symbol
-                }
+        # Try all 4 APIs in priority order
+        for api_name in PRICE_TRACKING_CONFIG["api_priority_order"]:
+            try:
+                price = await self.get_price_from_single_api(api_name, pair_clean)
+                if price is not None:
+                    prices[api_name] = price
+                else:
+                    api_errors[api_name] = "no_data"
+            except Exception as e:
+                api_errors[api_name] = str(e)[:50]
 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
@@ -2412,7 +2392,7 @@ class TradingBot(commands.Bot):
             api_errors["fmp"] = str(e)
             print(f"FMP API failed for {pair_clean}: {e}")
 
-        # Verify price accuracy using multiple sources
+        # Verify price accuracy using the 4 API sources
         return await self.verify_price_accuracy(pair_clean, prices, api_errors)
 
     async def verify_price_accuracy(self, pair: str, prices: Dict[str, float], api_errors: Dict[str, str]) -> Optional[float]:
@@ -2463,14 +2443,11 @@ class TradingBot(commands.Bot):
             return price
 
     async def get_all_api_prices(self, pair_clean: str) -> Dict[str, any]:
-        """Get prices from all available APIs for comparison - returns dict with prices and errors"""
-        all_api_names = ["fxapi", "exchangerate_api", "currencyapi", "twelve_data", "abstractapi", 
-                        "currencylayer", "fixer", "openexchange", "alpha_vantage", "apilayer", 
-                        "currencybeacon", "polygon", "fmp"]
-        
+        """Get prices from all 4 selected APIs for comparison - returns dict with prices and errors"""
+        api_priority_order = PRICE_TRACKING_CONFIG["api_priority_order"]
         api_results = {}
         
-        for api_name in all_api_names:
+        for api_name in api_priority_order:
             try:
                 # Check if API key exists
                 api_key_name = f"{api_name}_key"
