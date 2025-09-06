@@ -582,16 +582,14 @@ class TradingBot(commands.Bot):
                         continue
                         
                 except Exception as e:
-                    print(f"Error checking price for trade {message_id}: {e}")
                     trades_to_remove.append(message_id)
             
             # Remove failed trades from database
             for message_id in trades_to_remove:
                 await self.remove_trade_from_db(message_id)
-                print(f"Removed failed trade {message_id} from tracking")
                     
         except Exception as e:
-            print(f"Error in price tracking loop: {e}")
+            pass
 
     @tasks.loop(minutes=30)
     async def heartbeat_task(self):
@@ -1373,10 +1371,9 @@ class TradingBot(commands.Bot):
                         trade_data["tp3"] = live_levels["tp3"]
                         trade_data["sl"] = live_levels["sl"]
                         
-                        print(f"✅ Signal tracking: Discord entry ${trade_data['discord_entry']}, Live entry ${live_price}")
-                        print(f"   Tracking TP/SL based on live price: TP1=${trade_data['tp1']}, SL=${trade_data['sl']}")
+                        pass
                     else:
-                        print(f"⚠️ Could not get live price for {trade_data['pair']}, using Discord prices for tracking")
+                        pass
                     
                     # Add channel and message info
                     trade_data["channel_id"] = message.channel.id
@@ -1386,11 +1383,11 @@ class TradingBot(commands.Bot):
                     # Add to active trades with database persistence
                     await self.save_trade_to_db(str(message.id), trade_data)
                     
-                    print(f"✅ Started tracking signal for {trade_data['pair']} ({trade_data['action']}) - Message ID: {message.id}")
+                    await self.log_to_discord(f"✅ Started tracking {trade_data['pair']} {trade_data['action']} signal")
                 else:
-                    print(f"❌ Could not parse signal from message: {message.content[:100]}...")
+                    pass
             except Exception as e:
-                print(f"Error processing signal message: {e}")
+                pass
         
         # Process message for level system
         await self.process_message_for_levels(message)
@@ -1570,7 +1567,6 @@ class TradingBot(commands.Bot):
     async def load_active_trades_from_db(self):
         """Load active trading signals from database for 24/7 persistence"""
         if not self.db_pool:
-            print("⚠️ No database - active trades will be in-memory only")
             return
         
         try:
@@ -1607,83 +1603,72 @@ class TradingBot(commands.Bot):
                     # Store in memory for quick access
                     PRICE_TRACKING_CONFIG["active_trades"][row['message_id']] = trade_data
                 
-                if PRICE_TRACKING_CONFIG["active_trades"]:
-                    print(f"🔄 Loaded {len(PRICE_TRACKING_CONFIG['active_trades'])} active trades from database")
-                    print("✅ 24/7 trade tracking fully restored from database")
-                else:
-                    print("📊 No active trades found in database - ready for new signals")
+                pass
         
         except Exception as e:
-            print(f"❌ Error loading active trades from database: {str(e)}")
-            print("   Continuing with in-memory storage only")
+            pass
 
     async def save_trade_to_db(self, message_id: str, trade_data: dict):
         """Save a new trading signal to database for persistence"""
-        if not self.db_pool:
-            return
+        # Always save to memory for tracking (works with or without database)
+        PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
         
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.execute('''
-                    INSERT INTO active_trades (
-                        message_id, channel_id, guild_id, pair, action,
-                        entry_price, tp1_price, tp2_price, tp3_price, sl_price,
-                        discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
-                        live_entry, status, tp_hits, breakeven_active
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-                ''', 
-                message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
-                trade_data["pair"], trade_data["action"], 
-                trade_data["entry"], trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"],
-                trade_data.get("discord_entry"), trade_data.get("discord_tp1"), trade_data.get("discord_tp2"), 
-                trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
-                trade_data.get("live_entry"), trade_data.get("status", "active"),
-                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
-                )
-                
-                # Also update in-memory for fast access
-                PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
-                
-        except Exception as e:
-            print(f"❌ Error saving trade to database: {str(e)}")
+        # Also save to database if available
+        if self.db_pool:
+            try:
+                async with self.db_pool.acquire() as conn:
+                    await conn.execute('''
+                        INSERT INTO active_trades (
+                            message_id, channel_id, guild_id, pair, action,
+                            entry_price, tp1_price, tp2_price, tp3_price, sl_price,
+                            discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
+                            live_entry, status, tp_hits, breakeven_active
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+                    ''', 
+                    message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
+                    trade_data["pair"], trade_data["action"], 
+                    trade_data["entry"], trade_data["tp1"], trade_data["tp2"], trade_data["tp3"], trade_data["sl"],
+                    trade_data.get("discord_entry"), trade_data.get("discord_tp1"), trade_data.get("discord_tp2"), 
+                    trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
+                    trade_data.get("live_entry"), trade_data.get("status", "active"),
+                    ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                    )
+            except Exception as e:
+                pass  # Continue with in-memory storage if database fails
 
     async def update_trade_in_db(self, message_id: str, trade_data: dict):
         """Update an existing trade in database"""
-        if not self.db_pool:
-            return
+        # Always update in-memory first
+        PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
         
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.execute('''
-                    UPDATE active_trades SET 
-                        status = $2, tp_hits = $3, breakeven_active = $4, last_updated = NOW()
-                    WHERE message_id = $1
-                ''', 
-                message_id, trade_data.get("status", "active"),
-                ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
-                )
-                
-                # Also update in-memory
-                PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
-                
-        except Exception as e:
-            print(f"❌ Error updating trade in database: {str(e)}")
+        # Also update database if available
+        if self.db_pool:
+            try:
+                async with self.db_pool.acquire() as conn:
+                    await conn.execute('''
+                        UPDATE active_trades SET 
+                            status = $2, tp_hits = $3, breakeven_active = $4, last_updated = NOW()
+                        WHERE message_id = $1
+                    ''', 
+                    message_id, trade_data.get("status", "active"),
+                    ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                    )
+            except Exception as e:
+                pass  # Continue with in-memory storage if database fails
 
     async def remove_trade_from_db(self, message_id: str):
         """Remove completed trade from database"""
-        if not self.db_pool:
-            return
+        # Always remove from memory first
+        if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+            del PRICE_TRACKING_CONFIG["active_trades"][message_id]
         
-        try:
-            async with self.db_pool.acquire() as conn:
-                await conn.execute('DELETE FROM active_trades WHERE message_id = $1', message_id)
-                
-                # Also remove from in-memory
-                if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
-                    del PRICE_TRACKING_CONFIG["active_trades"][message_id]
-                
-        except Exception as e:
-            print(f"❌ Error removing trade from database: {str(e)}")
+        # Also remove from database if available
+        if self.db_pool:
+            try:
+                async with self.db_pool.acquire() as conn:
+                    await conn.execute('DELETE FROM active_trades WHERE message_id = $1', message_id)
+            except Exception as e:
+                pass  # Continue with in-memory removal if database fails
 
     async def get_active_trades_from_db(self):
         """Get current active trades from database (used by commands)"""
@@ -1700,8 +1685,15 @@ class TradingBot(commands.Bot):
             return PRICE_TRACKING_CONFIG["active_trades"]
         
         except Exception as e:
-            print(f"❌ Error getting active trades: {str(e)}")
             return PRICE_TRACKING_CONFIG["active_trades"]
+
+    async def remove_trade_from_tracking(self, message_id: str):
+        """Remove a trade from tracking (wrapper for manual removal)"""
+        try:
+            await self.remove_trade_from_db(message_id)
+            return True
+        except Exception:
+            return False
 
     async def save_invite_tracking(self):
         """Save invite tracking data to database"""
@@ -2189,10 +2181,10 @@ class TradingBot(commands.Bot):
                 for field, value in trade_data.items():
                     if field in ["pair", "action", "entry", "tp1", "tp2", "tp3", "sl"] and value is None:
                         missing_fields.append(field)
-                print(f"❌ Signal parsing failed - missing fields: {missing_fields}")
+                pass
             
         except Exception as e:
-            print(f"Error parsing signal: {e}")
+            pass
         
         return None
 
@@ -4910,8 +4902,11 @@ async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool)
     
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="activetrades", description="[OWNER ONLY] View detailed status of all tracked trading signals")
-async def active_trades(interaction: discord.Interaction):
+# ===== ACTIVE TRADES COMMAND GROUP =====
+active_trades_group = app_commands.Group(name="activetrades", description="[OWNER ONLY] Manage tracked trading signals")
+
+@active_trades_group.command(name="view", description="View detailed status of all tracked trading signals")
+async def active_trades_view(interaction: discord.Interaction):
     """Show active trades with detailed price level analysis"""
     if not await owner_check(interaction):
         return
@@ -4995,6 +4990,109 @@ async def active_trades(interaction: discord.Interaction):
         embed.set_footer(text="Signals automatically removed when SL or TP3 is hit (after notification sent)")
     
     await interaction.followup.send(embed=embed)
+
+@active_trades_group.command(name="remove", description="Remove a tracked trading signal")
+@app_commands.describe(trade_id="Select the trade to remove from tracking")
+async def active_trades_remove(interaction: discord.Interaction, trade_id: str):
+    """Remove a specific trade from tracking"""
+    if not await owner_check(interaction):
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    # Get active trades to verify the trade exists
+    active_trades = await bot.get_active_trades_from_db()
+    
+    if not active_trades:
+        embed = discord.Embed(
+            title="❌ Remove Trade Signal",
+            description="No active trades found to remove.",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    # Find the trade by partial message ID match
+    matching_trades = {k: v for k, v in active_trades.items() if k.startswith(trade_id) or trade_id in k}
+    
+    if not matching_trades:
+        embed = discord.Embed(
+            title="❌ Remove Trade Signal",
+            description=f"No trade found matching ID: `{trade_id}`",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    if len(matching_trades) > 1:
+        embed = discord.Embed(
+            title="❌ Remove Trade Signal",
+            description=f"Multiple trades match `{trade_id}`. Please be more specific:\n" + 
+                       "\n".join([f"• `{k[:12]}...` - {v['pair']} {v['action']}" for k, v in list(matching_trades.items())[:5]]),
+            color=discord.Color.orange()
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    # Get the exact match
+    message_id, trade_data = list(matching_trades.items())[0]
+    
+    # Remove from memory and database
+    success = await bot.remove_trade_from_tracking(message_id)
+    
+    if success:
+        embed = discord.Embed(
+            title="✅ Trade Signal Removed",
+            description=f"**{trade_data['pair']} {trade_data['action']}** has been removed from tracking.\n\n"
+                       f"• **Entry:** ${trade_data['entry']:.5f}\n"
+                       f"• **Message ID:** `{message_id[:12]}...`\n\n"
+                       f"*This signal will no longer trigger SL/TP notifications.*",
+            color=discord.Color.green()
+        )
+    else:
+        embed = discord.Embed(
+            title="⚠️ Partial Removal",
+            description=f"**{trade_data['pair']} {trade_data['action']}** was removed from memory but may still exist in database.\n\n"
+                       f"The signal should no longer trigger notifications.",
+            color=discord.Color.orange()
+        )
+    
+    await interaction.followup.send(embed=embed)
+    
+    # Log the removal
+    await bot.log_to_discord(f"🗑️ Owner manually removed trade signal: {trade_data['pair']} {trade_data['action']} (Entry: ${trade_data['entry']:.5f})")
+
+# Add autocomplete for trade selection
+@active_trades_remove.autocomplete('trade_id')
+async def trade_id_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Provide autocomplete options for trade IDs"""
+    if interaction.user.id != OWNER_ID:
+        return []
+    
+    try:
+        # Get active trades
+        active_trades = await bot.get_active_trades_from_db()
+        
+        if not active_trades:
+            return [app_commands.Choice(name="No active trades", value="none")]
+        
+        choices = []
+        for message_id, trade_data in list(active_trades.items())[:15]:  # Limit to 15 for autocomplete
+            # Create readable choice name
+            choice_name = f"{trade_data['pair']} {trade_data['action']} - Entry: ${trade_data['entry']:.5f} ({message_id[:8]}...)"
+            choice_value = message_id[:12]  # Use first 12 chars of message ID
+            choices.append(app_commands.Choice(name=choice_name[:100], value=choice_value))
+        
+        # Filter by current input if provided
+        if current:
+            choices = [c for c in choices if current.lower() in c.name.lower() or current.lower() in c.value.lower()]
+        
+        return choices[:25]  # Discord limit
+    except Exception:
+        return [app_commands.Choice(name="Error loading trades", value="error")]
+
+# Register the command group
+bot.tree.add_command(active_trades_group)
 
 async def analyze_trade_position(trade_data: dict, current_price: float) -> dict:
     """Analyze where the current price stands relative to trade levels"""
@@ -5126,109 +5224,6 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
         )
         await interaction.followup.send(embed=embed)
 
-
-# ===== ANTI-ABUSE MANAGEMENT COMMAND =====
-@bot.tree.command(name="antiabuse", description="[OWNER ONLY] Manage anti-abuse system for auto-roles")
-@app_commands.describe(
-    action="Action: view, unblock, block, or stats",
-    user_id="Discord User ID (for block/unblock actions)",
-    reason="Reason for manual block (for block action)"
-)
-async def anti_abuse_command(interaction: discord.Interaction, action: str, user_id: str = None, reason: str = None):
-    """Manage anti-abuse system"""
-    if not await owner_check(interaction):
-        return
-    
-    try:
-        await interaction.response.defer(ephemeral=True)
-        
-        if action.lower() == "view":
-            # Show blocked users and statistics
-            if not AUTO_ROLE_CONFIG["role_history"]:
-                await interaction.followup.send("📋 No users in anti-abuse history.", ephemeral=True)
-                return
-            
-            blocked_users = []
-            total_users = len(AUTO_ROLE_CONFIG["role_history"])
-            
-            for uid, data in AUTO_ROLE_CONFIG["role_history"].items():
-                if isinstance(data, dict) and "blocked_reason" in data:
-                    try:
-                        member = interaction.guild.get_member(int(uid))
-                        member_name = member.display_name if member else f"User-{uid}"
-                        blocked_reason = data["blocked_reason"]
-                        blocked_at = data.get("blocked_at", "Unknown")
-                        blocked_users.append(f"• **{member_name}** (`{uid}`)\n  └ Reason: {blocked_reason}\n  └ Blocked: {blocked_at[:10]}")
-                    except Exception:
-                        continue
-            
-            report = f"🛡️ **Anti-Abuse System Report**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            report += f"• **Total users in history**: {total_users}\n"
-            report += f"• **Currently blocked**: {len(blocked_users)}\n\n"
-            
-            if blocked_users:
-                report += "**🚫 Blocked Users:**\n" + "\n".join(blocked_users[:10])
-                if len(blocked_users) > 10:
-                    report += f"\n\n*...and {len(blocked_users) - 10} more*"
-            else:
-                report += "✅ No users currently blocked"
-            
-            await interaction.followup.send(report, ephemeral=True)
-            
-        elif action.lower() == "unblock":
-            if not user_id:
-                await interaction.followup.send("❌ User ID required for unblock action", ephemeral=True)
-                return
-            
-            if user_id in AUTO_ROLE_CONFIG["role_history"]:
-                del AUTO_ROLE_CONFIG["role_history"][user_id]
-                await bot.save_auto_role_config()
-                await interaction.followup.send(f"✅ Unblocked user {user_id} from anti-abuse system", ephemeral=True)
-                await bot.log_to_discord(f"🔓 Owner manually unblocked user {user_id} from anti-abuse system")
-            else:
-                await interaction.followup.send(f"❌ User {user_id} not found in anti-abuse system", ephemeral=True)
-                
-        elif action.lower() == "block":
-            if not user_id or not reason:
-                await interaction.followup.send("❌ User ID and reason required for block action", ephemeral=True)
-                return
-            
-            AUTO_ROLE_CONFIG["role_history"][user_id] = {
-                "blocked_reason": f"manual_block: {reason}",
-                "blocked_by": interaction.user.id,
-                "blocked_at": datetime.now(AMSTERDAM_TZ).isoformat()
-            }
-            await bot.save_auto_role_config()
-            await interaction.followup.send(f"✅ Manually blocked user {user_id}: {reason}", ephemeral=True)
-            await bot.log_to_discord(f"🔒 Owner manually blocked user {user_id}: {reason}")
-            
-        elif action.lower() == "stats":
-            # Show anti-abuse statistics
-            total_history = len(AUTO_ROLE_CONFIG["role_history"])
-            blocked_new_accounts = sum(1 for data in AUTO_ROLE_CONFIG["role_history"].values() 
-                                     if isinstance(data, dict) and data.get("blocked_reason") == "account_too_new")
-            blocked_rapid_joins = sum(1 for data in AUTO_ROLE_CONFIG["role_history"].values() 
-                                    if isinstance(data, dict) and data.get("blocked_reason") == "rapid_join_pattern")
-            manual_blocks = sum(1 for data in AUTO_ROLE_CONFIG["role_history"].values() 
-                              if isinstance(data, dict) and "manual_block" in data.get("blocked_reason", ""))
-            
-            stats_report = f"📊 **Anti-Abuse Statistics**\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            stats_report += f"• **Total users in history**: {total_history}\n"
-            stats_report += f"• **Blocked (new accounts)**: {blocked_new_accounts}\n"
-            stats_report += f"• **Blocked (rapid joins)**: {blocked_rapid_joins}\n"
-            stats_report += f"• **Manual blocks**: {manual_blocks}\n"
-            stats_report += f"• **Normal completions**: {total_history - blocked_new_accounts - blocked_rapid_joins - manual_blocks}\n\n"
-            stats_report += f"**🛡️ System Status**: Manual blocking only\n"
-            stats_report += f"**📅 Min Account Age**: DISABLED (influencer collabs enabled)\n"
-            stats_report += f"**⏱️ Max Joins/Hour**: UNLIMITED (influencer collabs enabled)"
-            
-            await interaction.followup.send(stats_report, ephemeral=True)
-            
-        else:
-            await interaction.followup.send("❌ Invalid action. Use: view, unblock, block, or stats", ephemeral=True)
-    
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error managing anti-abuse system: {str(e)}", ephemeral=True)
 
 
 # Web server for health checks
