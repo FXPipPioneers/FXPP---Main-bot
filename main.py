@@ -1914,7 +1914,7 @@ class TradingBot(commands.Bot):
         return pair_clean
 
     async def get_price_from_single_api(self, api_name: str, pair_clean: str) -> Optional[float]:
-        """Get price from a specific API - Enhanced with 13 APIs for maximum accuracy"""
+        """Get price from a specific API - Only 4 selected APIs in priority order"""
         try:
             # Map symbol to API-specific format
             api_symbol = self.get_api_symbol(api_name, pair_clean)
@@ -2295,102 +2295,6 @@ class TradingBot(commands.Bot):
                     api_errors[api_name] = "no_data"
             except Exception as e:
                 api_errors[api_name] = str(e)[:50]
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "rates" in data and api_symbol in data["rates"]:
-                                prices["fxapi"] = float(data["rates"][api_symbol])
-                        elif response.status == 429:
-                            api_errors["fxapi"] = "rate_limit"
-                            await self.log_api_limit_warning("FXApi", "Rate limit exceeded - consider upgrading plan")
-                        elif response.status == 403:
-                            api_errors["fxapi"] = "access_denied"
-                            await self.log_api_limit_warning("FXApi", "Access denied - API key may be invalid or expired")
-        except Exception as e:
-            api_errors["fxapi"] = str(e)
-
-        # Try Twelve Data API
-        try:
-            if PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]:
-                api_symbol = self.get_api_symbol("twelve_data", pair_clean)
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['twelve_data']}"
-                params = {
-                    "symbol": api_symbol,
-                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["twelve_data_key"]
-                }
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "price" in data:
-                                prices["twelve_data"] = float(data["price"])
-                            elif "message" in data and "limit" in data["message"].lower():
-                                api_errors["twelve_data"] = "usage_limit"
-                                await self.log_api_limit_warning("Twelve Data", f"Usage limit reached: {data['message']}")
-                        elif response.status == 429:
-                            api_errors["twelve_data"] = "rate_limit"
-                            await self.log_api_limit_warning("Twelve Data", "Rate limit exceeded - upgrade for higher limits")
-        except Exception as e:
-            api_errors["twelve_data"] = str(e)
-
-        # Try Alpha Vantage API (skip for indices)
-        try:
-            if (PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"] and 
-                pair_clean not in ["US100", "GER40", "GER30", "NAS100", "US500", "UK100", "JPN225", "AUS200"]):
-                api_symbol = self.get_api_symbol("alpha_vantage", pair_clean)
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['alpha_vantage']}"
-                params = {
-                    "function": "CURRENCY_EXCHANGE_RATE",
-                    "from_currency": api_symbol[:3],
-                    "to_currency": api_symbol[3:],
-                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["alpha_vantage_key"]
-                }
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "Realtime Currency Exchange Rate" in data:
-                                rate_data = data["Realtime Currency Exchange Rate"]
-                                if "5. Exchange Rate" in rate_data:
-                                    prices["alpha_vantage"] = float(rate_data["5. Exchange Rate"])
-                            elif "Note" in data and "call frequency" in data["Note"]:
-                                api_errors["alpha_vantage"] = "frequency_limit"
-                                await self.log_api_limit_warning("Alpha Vantage", "Daily API limit reached - upgrade for unlimited calls")
-                        elif response.status == 429:
-                            api_errors["alpha_vantage"] = "rate_limit"
-                            await self.log_api_limit_warning("Alpha Vantage", "Rate limit exceeded")
-        except Exception as e:
-            api_errors["alpha_vantage"] = str(e)
-
-        # Try Financial Modeling Prep API
-        try:
-            if PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]:
-                api_symbol = self.get_api_symbol("fmp", pair_clean)
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['fmp']}/{api_symbol}"
-                params = {
-                    "apikey": PRICE_TRACKING_CONFIG["api_keys"]["fmp_key"]
-                }
-
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if isinstance(data, list) and len(data) > 0 and "price" in data[0]:
-                                prices["fmp"] = float(data[0]["price"])
-                            elif isinstance(data, dict) and "Error Message" in data:
-                                if "limit" in data["Error Message"].lower():
-                                    api_errors["fmp"] = "usage_limit"
-                                    await self.log_api_limit_warning("Financial Modeling Prep", f"Usage limit: {data['Error Message']}")
-                        elif response.status == 429:
-                            api_errors["fmp"] = "rate_limit"
-                            await self.log_api_limit_warning("Financial Modeling Prep", "Rate limit exceeded - upgrade plan needed")
-        except Exception as e:
-            api_errors["fmp"] = str(e)
-            print(f"FMP API failed for {pair_clean}: {e}")
 
         # Verify price accuracy using the 4 API sources
         return await self.verify_price_accuracy(pair_clean, prices, api_errors)
