@@ -567,8 +567,8 @@ class TradingBot(commands.Bot):
 
             for message_id, trade_data in list(active_trades.items()):
                 try:
-                    # Get current price to check if any levels were hit
-                    current_price = await self.get_live_price(trade_data["pair"], use_all_apis=True)
+                    # Get current price to check if any levels were hit using API priority order
+                    current_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
                     if current_price is None:
                         continue
 
@@ -655,11 +655,36 @@ class TradingBot(commands.Bot):
             return None
 
 
-    @tasks.loop(seconds=225)  # Check every 3 minutes 45 seconds (3 min + 45s safety buffer) for optimal API usage
+    @tasks.loop(seconds=300)  # Dynamic interval: 5 min normal, 15 min night pause (01:00-07:00 weekdays)
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - optimized for free API tiers"""
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return
+        
+        # Check if we're in weekend pause period (Friday 23:00 to Sunday 23:55 Amsterdam time)
+        amsterdam_now = datetime.now(AMSTERDAM_TZ)
+        weekday = amsterdam_now.weekday()  # 0=Monday, 6=Sunday
+        hour = amsterdam_now.hour
+        
+        # Weekend pause: Friday 23:00 to Sunday 23:55
+        if (weekday == 4 and hour >= 23) or weekday == 5 or (weekday == 6 and hour < 23) or (weekday == 6 and hour == 23 and amsterdam_now.minute < 55):
+            return  # Skip tracking during weekend to conserve API usage
+            
+        # Night pause: 01:00-07:00 Amsterdam time on weekdays (reduced frequency)
+        # During night: Check every 15 minutes instead of every 5 minutes
+        in_night_pause = weekday <= 4 and 1 <= hour < 7  # 01:00-06:59 on weekdays
+        
+        if in_night_pause:
+            # During night pause, only check every 3rd iteration (15 min instead of 5 min)
+            if not hasattr(self, '_night_pause_counter'):
+                self._night_pause_counter = 0
+            self._night_pause_counter += 1
+            
+            if self._night_pause_counter % 3 != 0:
+                return  # Skip this iteration during night pause
+        else:
+            # Reset counter when not in night pause
+            self._night_pause_counter = 0
 
         # Get active trades from database for 24/7 persistence
         active_trades = await self.get_active_trades_from_db()
@@ -855,6 +880,20 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Missed hits during night pause table for chronological processing
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS missed_hits (
+                        id SERIAL PRIMARY KEY,
+                        message_id VARCHAR(20) NOT NULL,
+                        hit_type VARCHAR(10) NOT NULL,
+                        hit_level VARCHAR(10) NOT NULL,
+                        hit_price DECIMAL(12,8) NOT NULL,
+                        hit_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                        processed BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
@@ -871,6 +910,7 @@ class TradingBot(commands.Bot):
 
             # Load active trades from database for 24/7 persistence
             await self.load_active_trades_from_db()
+            print(f"✅ Loaded {len(PRICE_TRACKING_CONFIG['active_trades'])} active trades from database")
 
         except Exception as e:
             print(f"❌ Database initialization failed: {e}")
@@ -1786,6 +1826,70 @@ class TradingBot(commands.Bot):
         except Exception as e:
             return PRICE_TRACKING_CONFIG["active_trades"]
 
+    async def get_trade_from_db(self, message_id: str):
+        """Get a single trade from database by message ID"""
+        if not self.db_pool:
+            return PRICE_TRACKING_CONFIG["active_trades"].get(message_id)
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                row = await conn.fetchrow('''
+                    SELECT * FROM active_trades WHERE message_id = $1
+                ''', message_id)
+                
+                if row:
+                    # Convert database row to trade data format
+                    tp_hits_list = row['tp_hits'].split(',') if row['tp_hits'] else []
+                    return {
+                        'pair': row['pair'],
+                        'action': row['action'],
+                        'entry': float(row['entry_price']),
+                        'tp1': float(row['tp1_price']),
+                        'tp2': float(row['tp2_price']),
+                        'tp3': float(row['tp3_price']),
+                        'sl': float(row['sl_price']),
+                        'discord_entry': float(row['discord_entry']) if row['discord_entry'] else None,
+                        'discord_tp1': float(row['discord_tp1']) if row['discord_tp1'] else None,
+                        'discord_tp2': float(row['discord_tp2']) if row['discord_tp2'] else None,
+                        'discord_tp3': float(row['discord_tp3']) if row['discord_tp3'] else None,
+                        'discord_sl': float(row['discord_sl']) if row['discord_sl'] else None,
+                        'live_entry': float(row['live_entry']) if row['live_entry'] else None,
+                        'status': row['status'],
+                        'tp_hits': tp_hits_list,
+                        'breakeven_active': row['breakeven_active'],
+                        'channel_id': row['channel_id'],
+                        'guild_id': row['guild_id']
+                    }
+                return None
+                
+        except Exception as e:
+            print(f"Error getting trade from database: {e}")
+            return PRICE_TRACKING_CONFIG["active_trades"].get(message_id)
+
+    async def store_missed_hit(self, message_id: str, hit_type: str, hit_level: str, hit_price: float):
+        """Store a missed hit during night pause for chronological processing later"""
+        if not self.db_pool:
+            return
+        
+        try:
+            amsterdam_now = datetime.now(AMSTERDAM_TZ)
+            async with self.db_pool.acquire() as conn:
+                await conn.execute('''
+                    INSERT INTO missed_hits (message_id, hit_type, hit_level, hit_price, hit_time)
+                    VALUES ($1, $2, $3, $4, $5)
+                ''', message_id, hit_type, hit_level, hit_price, amsterdam_now)
+        except Exception as e:
+            print(f"Error storing missed hit: {e}")
+
+    def is_night_pause(self):
+        """Check if we're currently in night pause period (01:00-07:00 Amsterdam time on weekdays)"""
+        amsterdam_now = datetime.now(AMSTERDAM_TZ)
+        weekday = amsterdam_now.weekday()  # 0=Monday, 6=Sunday
+        hour = amsterdam_now.hour
+        
+        # Night pause: 01:00-07:00 Amsterdam time on weekdays (Monday-Friday)
+        return weekday <= 4 and 1 <= hour < 7
+
     async def remove_trade_from_tracking(self, message_id: str):
         """Remove a trade from tracking (wrapper for manual removal)"""
         try:
@@ -2357,8 +2461,15 @@ class TradingBot(commands.Bot):
             action = trade_data["action"]
             entry = trade_data["entry"]
 
+            # Apply trading logic validation before processing any hits
+            tp_hits_set = set(trade_data.get("tp_hits", []))
+            
+            # Rule 1: If TP2 was already hit, SL cannot hit (breakeven protection)
+            if "tp2" in tp_hits_set:
+                trade_data["breakeven_active"] = True
+            
             # Determine if we should check breakeven (after TP2 hit)
-            if trade_data["breakeven_active"]:
+            if trade_data.get("breakeven_active", False):
                 # Check if price returned to entry (breakeven SL)
                 if action == "BUY" and current_price <= entry:
                     await self.handle_breakeven_hit(message_id, trade_data)
@@ -2367,36 +2478,50 @@ class TradingBot(commands.Bot):
                     await self.handle_breakeven_hit(message_id, trade_data)
                     return True
             else:
-                # Check SL first
+                # Check SL first - but apply trading logic validation
+                sl_hit = False
                 if action == "BUY" and current_price <= trade_data["sl"]:
-                    await self.handle_sl_hit(message_id, trade_data)
-                    return True
+                    sl_hit = True
                 elif action == "SELL" and current_price >= trade_data["sl"]:
+                    sl_hit = True
+                
+                if sl_hit:
+                    # Rule 2: SL cannot hit after TP2 (breakeven protection)
+                    if "tp2" in tp_hits_set:
+                        return False  # Ignore this SL hit due to breakeven
+                    
+                    # Rule 3: SL cannot hit after TP3
+                    if "tp3" in tp_hits_set:
+                        return False  # Ignore this SL hit
+                    
+                    # SL is valid - process it
                     await self.handle_sl_hit(message_id, trade_data)
                     return True
 
-                # Check TP levels
+                # Check TP levels with trading logic validation
+                tp_hit_level = None
                 if action == "BUY":
-                    if "tp3" not in trade_data["tp_hits"] and current_price >= trade_data["tp3"]:
-                        await self.handle_tp_hit(message_id, trade_data, "tp3")
-                        return True
-                    elif "tp2" not in trade_data["tp_hits"] and current_price >= trade_data["tp2"]:
-                        await self.handle_tp_hit(message_id, trade_data, "tp2")
-                        return True
-                    elif "tp1" not in trade_data["tp_hits"] and current_price >= trade_data["tp1"]:
-                        await self.handle_tp_hit(message_id, trade_data, "tp1")
-                        return True
-
+                    if "tp3" not in tp_hits_set and current_price >= trade_data["tp3"]:
+                        tp_hit_level = "tp3"
+                    elif "tp2" not in tp_hits_set and current_price >= trade_data["tp2"]:
+                        tp_hit_level = "tp2"
+                    elif "tp1" not in tp_hits_set and current_price >= trade_data["tp1"]:
+                        tp_hit_level = "tp1"
                 elif action == "SELL":
-                    if "tp3" not in trade_data["tp_hits"] and current_price <= trade_data["tp3"]:
-                        await self.handle_tp_hit(message_id, trade_data, "tp3")
-                        return True
-                    elif "tp2" not in trade_data["tp_hits"] and current_price <= trade_data["tp2"]:
-                        await self.handle_tp_hit(message_id, trade_data, "tp2")
-                        return True
-                    elif "tp1" not in trade_data["tp_hits"] and current_price <= trade_data["tp1"]:
-                        await self.handle_tp_hit(message_id, trade_data, "tp1")
-                        return True
+                    if "tp3" not in tp_hits_set and current_price <= trade_data["tp3"]:
+                        tp_hit_level = "tp3"
+                    elif "tp2" not in tp_hits_set and current_price <= trade_data["tp2"]:
+                        tp_hit_level = "tp2"
+                    elif "tp1" not in tp_hits_set and current_price <= trade_data["tp1"]:
+                        tp_hit_level = "tp1"
+                
+                if tp_hit_level:
+                    # Rule 4: TP cannot hit after SL (this shouldn't happen in real-time, but safety check)
+                    # In real-time, if SL was hit, the trade would be closed, so this is just extra safety
+                    
+                    # TP hit is valid - process it
+                    await self.handle_tp_hit(message_id, trade_data, tp_hit_level)
+                    return True
 
             return False
 
@@ -2458,6 +2583,114 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
+
+    async def process_night_pause_hits(self):
+        """Process all missed hits that occurred during night pause in chronological order with trading logic validation"""
+        if not self.db_pool:
+            return
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Get all unprocessed missed hits, sorted chronologically
+                missed_hits = await conn.fetch('''
+                    SELECT mh.*, at.action, at.pair, at.entry_price, at.tp1_price, at.tp2_price, at.tp3_price, at.sl_price,
+                           at.tp_hits, at.breakeven_active, at.status
+                    FROM missed_hits mh
+                    JOIN active_trades at ON mh.message_id = at.message_id
+                    WHERE mh.processed = FALSE
+                    ORDER BY mh.hit_time ASC
+                ''')
+                
+                if not missed_hits:
+                    return
+                
+                # Group hits by message_id for chronological processing per trade
+                trade_hits = {}
+                for hit in missed_hits:
+                    msg_id = hit['message_id']
+                    if msg_id not in trade_hits:
+                        trade_hits[msg_id] = []
+                    trade_hits[msg_id].append(hit)
+                
+                processed_count = 0
+                
+                # Process each trade's hits chronologically with trading logic validation
+                for message_id, hits in trade_hits.items():
+                    try:
+                        # Get current trade data
+                        trade_data = await self.get_trade_from_db(message_id)
+                        if not trade_data:
+                            continue
+                        
+                        # Apply chronological processing with trading logic
+                        valid_hits = self.validate_chronological_hits(hits)
+                        
+                        # Send notifications for valid hits in chronological order
+                        for hit in valid_hits:
+                            hit_type = hit['hit_type']
+                            hit_level = hit['hit_level']
+                            
+                            if hit_type == 'tp':
+                                await self.handle_tp_hit(message_id, trade_data, hit_level, offline_hit=True)
+                            elif hit_type == 'sl':
+                                await self.handle_sl_hit(message_id, trade_data, offline_hit=True)
+                            elif hit_type == 'breakeven':
+                                await self.handle_breakeven_hit(message_id, trade_data, offline_hit=True)
+                            
+                            # Mark this hit as processed
+                            await conn.execute('''
+                                UPDATE missed_hits SET processed = TRUE 
+                                WHERE id = $1
+                            ''', hit['id'])
+                            processed_count += 1
+                            
+                            # Small delay between messages to avoid spam
+                            await asyncio.sleep(1)
+                    
+                    except Exception as e:
+                        print(f"Error processing hits for trade {message_id}: {e}")
+                        continue
+                
+                if processed_count > 0:
+                    await self.log_to_discord(f"🌅 **Night pause ended** - Processed {processed_count} missed TP/SL hits that occurred during 01:00-07:00")
+                
+        except Exception as e:
+            print(f"Error processing night pause hits: {e}")
+    
+    def validate_chronological_hits(self, hits: List) -> List:
+        """Validate hits chronologically according to trading rules"""
+        valid_hits = []
+        sl_hit = False
+        tp_levels_hit = set()
+        
+        for hit in sorted(hits, key=lambda x: x['hit_time']):
+            hit_type = hit['hit_type']
+            hit_level = hit['hit_level']
+            
+            # Rule 1: If SL was hit first, ignore all subsequent TP hits
+            if sl_hit and hit_type == 'tp':
+                continue
+                
+            # Rule 2: If SL hits after TP2, ignore it (breakeven protection)
+            if hit_type == 'sl' and 'tp2' in tp_levels_hit:
+                continue
+                
+            # Rule 3: Cannot hit both TP3 and SL
+            if hit_type == 'sl' and 'tp3' in tp_levels_hit:
+                continue
+            if hit_type == 'tp' and hit_level == 'tp3' and sl_hit:
+                continue
+                
+            # Hit is valid according to trading rules
+            valid_hits.append(hit)
+            
+            # Update state tracking
+            if hit_type == 'sl':
+                sl_hit = True
+            elif hit_type == 'tp':
+                tp_levels_hit.add(hit_level)
+                
+        return valid_hits
 
     async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str, offline_hit: bool = False):
         """Send TP hit notification with random message selection"""
