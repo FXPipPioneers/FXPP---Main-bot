@@ -3593,5 +3593,69 @@ async def price_test_command(interaction: discord.Interaction, pair: str):
         await interaction.followup.send(embed=embed)
 
 
+# Web server for health monitoring (required by Render)
+async def health_handler(request):
+    """Health check endpoint for Render monitoring"""
+    guild_count = len(bot.guilds) if bot.is_ready() else 0
+    
+    health_data = {
+        "status": "healthy" if bot.is_ready() else "starting",
+        "bot_ready": bot.is_ready(),
+        "guild_count": guild_count,
+        "latency_ms": round(bot.latency * 1000) if bot.is_ready() else None,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    return web.json_response(health_data)
+
+async def status_handler(request):
+    """Status endpoint with detailed bot information"""
+    if not bot.is_ready():
+        return web.json_response({"status": "bot_not_ready"}, status=503)
+    
+    status_data = {
+        "bot_user": str(bot.user),
+        "bot_id": bot.user.id if bot.user else None,
+        "guild_count": len(bot.guilds),
+        "latency_ms": round(bot.latency * 1000),
+        "uptime": "online",
+        "features": {
+            "price_tracking": True,
+            "auto_role": True,
+            "trading_signals": True,
+            "database_connected": bot.db_pool is not None
+        }
+    }
+    
+    return web.json_response(status_data)
+
+async def start_web_server():
+    """Start the web server for health monitoring"""
+    app = web.Application()
+    app.router.add_get('/health', health_handler)
+    app.router.add_get('/status', status_handler)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    site = web.TCPSite(runner, '0.0.0.0', 5000)
+    await site.start()
+    print("✅ Web server started on port 5000 for health monitoring")
+
+async def main():
+    """Main function to run both Discord bot and web server"""
+    # Start the web server for health monitoring
+    await start_web_server()
+    
+    # Start the Discord bot
+    await bot.start(DISCORD_TOKEN)
+
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("👋 Bot shutdown requested")
+    except Exception as e:
+        print(f"❌ Bot crashed with error: {e}")
+        import traceback
+        traceback.print_exc()
