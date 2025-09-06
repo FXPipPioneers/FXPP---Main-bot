@@ -105,7 +105,7 @@ ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
 # Global storage for invite tracking
 INVITE_TRACKING = {}  # invite_code: {"nickname": str, "total_joins": int, "total_left": int, "current_members": int, "creator_id": int, "guild_id": int}
 
-# Live price tracking system configuration - 15 API POWERHOUSE
+# Live price tracking system configuration - 13 API POWERHOUSE
 PRICE_TRACKING_CONFIG = {
     "enabled": True,  # 24/7 monitoring enabled by default
     "excluded_channel_id": "1394958907943817326",
@@ -118,7 +118,7 @@ PRICE_TRACKING_CONFIG = {
         "alpha_vantage_key": os.getenv("ALPHA_VANTAGE_KEY", ""),
         "twelve_data_key": os.getenv("TWELVE_DATA_KEY", ""),
         "fmp_key": os.getenv("FMP_KEY", ""),
-        # 11 NEW APIs for maximum accuracy
+        # 9 NEW APIs for maximum accuracy
         "exchangerate_key": os.getenv("EXCHANGERATE_API_KEY", ""),  # Free 1,500/month
         "currencylayer_key": os.getenv("CURRENCYLAYER_KEY", ""),   # Free 1,000/month
         "fixer_key": os.getenv("FIXER_API_KEY", ""),               # Free 1,000/month
@@ -127,9 +127,7 @@ PRICE_TRACKING_CONFIG = {
         "apilayer_key": os.getenv("APILAYER_KEY", ""),             # Free 1,000/month  
         "abstractapi_key": os.getenv("ABSTRACTAPI_KEY", ""),       # Free 1,000/month
         "currencybeacon_key": os.getenv("CURRENCYBEACON_KEY", ""), # Free 5,000/month
-        "metals_api_key": os.getenv("METALS_API_KEY", ""),         # Free 50/month (metals only)
-        "polygon_key": os.getenv("POLYGON_API_KEY", ""),           # Free 5 calls/min
-        "iex_key": os.getenv("IEX_API_KEY", "")                    # Free tier available
+        "polygon_key": os.getenv("POLYGON_API_KEY", "")            # Free 5 calls/min
     },
     "api_endpoints": {
         # FIXED Original 4 APIs 
@@ -137,7 +135,7 @@ PRICE_TRACKING_CONFIG = {
         "alpha_vantage": "https://www.alphavantage.co/query",
         "twelve_data": "https://api.twelvedata.com/quote",
         "fmp": "https://financialmodelingprep.com/api/v3/quote-short",
-        # 11 NEW API Endpoints  
+        # 9 NEW API Endpoints  
         "exchangerate": "https://v6.exchangerate-api.com/v6",
         "currencylayer": "https://apilayer.net/api/live",
         "fixer": "https://api.fixer.io/latest",
@@ -146,17 +144,15 @@ PRICE_TRACKING_CONFIG = {
         "apilayer": "https://api.apilayer.com/exchangerates_data/latest",
         "abstractapi": "https://exchange-rates.abstractapi.com/v1/live",
         "currencybeacon": "https://api.currencybeacon.com/v1/latest",
-        "metals_api": "https://api.metals.live/v1/latest",         # Metals/Gold specialist
-        "polygon": "https://api.polygon.io/v2/aggs/ticker",
-        "iex": "https://cloud.iexapis.com/stable/forex/rate"
+        "polygon": "https://api.polygon.io/v2/aggs/ticker"
     },
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 45,   # OPTIMIZED: 45 seconds with 15 APIs = ~20 calls per API per hour (well within limits)
+    "check_interval": 45,   # OPTIMIZED: 45 seconds with 13 APIs = ~20 calls per API per hour (well within limits)
     "api_rotation_index": 0,  # for rotating through APIs efficiently
     "api_priority": [        # Priority order - most accurate first
-        "fxapi", "twelve_data", "polygon", "metals_api", "exchangerate", 
+        "fxapi", "twelve_data", "polygon", "exchangerate", 
         "currencybeacon", "fixer", "apilayer", "currencyapi", "openexchange", 
-        "abstractapi", "currencylayer", "iex", "fmp", "alpha_vantage"
+        "abstractapi", "currencylayer", "fmp", "alpha_vantage"
     ]
 }
 
@@ -1940,9 +1936,9 @@ class TradingBot(commands.Bot):
                 PRICE_TRACKING_CONFIG["api_rotation_index"] = (start_index + 1) % len(api_order)
                 return price
         
-        # If first 3 fail, try gold specialist APIs for XAUUSD
+        # If first 3 fail, try polygon for XAUUSD
         if pair_clean == "XAUUSD":
-            for api_name in ["metals_api", "polygon", "fmp"]:
+            for api_name in ["polygon", "fmp"]:
                 price = await self.get_price_from_single_api(api_name, pair_clean)
                 if price is not None:
                     return price
@@ -2192,22 +2188,6 @@ class TradingBot(commands.Bot):
                             if "rates" in data and api_symbol.replace("USD", "") in data["rates"]:
                                 return float(data["rates"][api_symbol.replace("USD", "")])
             
-            elif api_name == "metals_api":
-                # Metals-API - Gold/Silver specialist - 50 free requests/month
-                if pair_clean != "XAUUSD":
-                    return None  # Only handles precious metals
-                    
-                url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['metals_api']}"
-                params = {"access_key": api_key, "base": "USD", "symbols": "XAU"}
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "rates" in data and "XAU" in data["rates"]:
-                                # Metals API returns USD per ounce directly
-                                return float(data["rates"]["XAU"])
-            
             elif api_name == "polygon":
                 # Polygon.io - 5 calls per minute free
                 if pair_clean == "XAUUSD":
@@ -2226,22 +2206,6 @@ class TradingBot(commands.Bot):
                             data = await response.json()
                             if "last" in data and "bid" in data["last"]:
                                 return float(data["last"]["bid"])
-            
-            elif api_name == "iex":
-                # IEX Cloud - Free tier available
-                if pair_clean == "XAUUSD":
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['iex']}/USDXAU"
-                else:
-                    url = f"{PRICE_TRACKING_CONFIG['api_endpoints']['iex']}/{api_symbol}"
-                
-                params = {"token": api_key}
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        if response.status == 200:
-                            data = await response.json()
-                            if "rate" in data:
-                                return float(data["rate"])
         
         except Exception as e:
             # Silent fail - let other APIs try
