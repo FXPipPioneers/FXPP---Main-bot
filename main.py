@@ -1859,7 +1859,11 @@ class TradingBot(commands.Bot):
                 
                 # Load all active trades from database
                 rows = await conn.fetch('SELECT * FROM active_trades ORDER BY created_at DESC')
-                print(f"🔍 DEBUG: Found {len(rows)} rows in active_trades table")
+                
+                # Send debugging to Discord channel
+                debug_channel = self.get_channel(1412344974871105567)
+                if debug_channel:
+                    await debug_channel.send(f"🔍 DEBUG (load_active_trades_from_db): Found {len(rows)} rows in active_trades table")
 
                 for row in rows:
                     # Convert database row to trade_data format
@@ -5359,8 +5363,12 @@ async def active_trades_view(interaction: discord.Interaction):
 
     # Get active trades from database for 24/7 persistence
     active_trades = await bot.get_active_trades_from_db()
-    print(f"🔍 DEBUG (/activetrades view): Found {len(active_trades)} active trades")
-    print(f"🔍 DEBUG (/activetrades view): Active trades keys: {list(active_trades.keys())}")
+    
+    # Send debugging to Discord channel
+    debug_channel = bot.get_channel(1412344974871105567)
+    if debug_channel:
+        await debug_channel.send(f"🔍 DEBUG (/activetrades view): Found {len(active_trades)} active trades")
+        await debug_channel.send(f"🔍 DEBUG (/activetrades view): Active trades keys: {list(active_trades.keys())}")
 
     if not active_trades:
         embed = discord.Embed(
