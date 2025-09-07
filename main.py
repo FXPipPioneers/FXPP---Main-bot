@@ -1499,24 +1499,51 @@ class TradingBot(commands.Bot):
             (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot) and
             PRICE_TRACKING_CONFIG["signal_keyword"] in message.content):
 
+            await self.debug_to_channel("1. SIGNAL DETECTED", 
+                f"Message from: {message.author.name} ({message.author.id})\n" +
+                f"Channel: {message.channel.name} ({message.channel.id})\n" +
+                f"Content: {message.content[:500]}...")
+
             try:
                 # Parse the signal message
+                await self.debug_to_channel("2. PARSING SIGNAL", "Starting to parse signal message...")
                 trade_data = self.parse_signal_message(message.content)
                 
                 if trade_data:
+                    await self.debug_to_channel("2. PARSING SIGNAL", 
+                        f"✅ Successfully parsed:\n" +
+                        f"Pair: {trade_data.get('pair')}\n" +
+                        f"Action: {trade_data.get('action')}\n" +
+                        f"Entry: {trade_data.get('entry')}\n" +
+                        f"TP1: {trade_data.get('tp1')}\n" +
+                        f"TP2: {trade_data.get('tp2')}\n" +
+                        f"TP3: {trade_data.get('tp3')}\n" +
+                        f"SL: {trade_data.get('sl')}", "✅")
+                    
                     # Determine which API works for this pair and assign it permanently
+                    await self.debug_to_channel("3. API ASSIGNMENT", f"Testing APIs for pair: {trade_data['pair']}")
                     assigned_api = await self.get_working_api_for_pair(trade_data["pair"])
                     trade_data["assigned_api"] = assigned_api
+                    await self.debug_to_channel("3. API ASSIGNMENT", 
+                        f"✅ Assigned API: {assigned_api} for {trade_data['pair']}", "✅")
                     
                     # Get live price using the assigned API for consistency, with fallback
+                    await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
+                        f"Getting live price for {trade_data['pair']} using {assigned_api}")
                     live_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
                     
                     # If assigned API fails, try fallback
                     if live_price is None:
+                        await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
+                            f"❌ Assigned API {assigned_api} failed, trying fallback...", "⚠️")
                         live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
 
                     if live_price:
+                        await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
+                            f"✅ Got live price: {live_price} for {trade_data['pair']}", "✅")
+                        
                         # Calculate live-price-based TP/SL levels for tracking
+                        await self.debug_to_channel("5. LEVEL CALCULATION", "Calculating live tracking levels...")
                         live_levels = self.calculate_live_tracking_levels(
                             live_price, trade_data["pair"], trade_data["action"]
                         )
@@ -1536,17 +1563,44 @@ class TradingBot(commands.Bot):
                         trade_data["tp3"] = live_levels["tp3"]
                         trade_data["sl"] = live_levels["sl"]
 
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"✅ Calculated levels:\n" +
+                            f"Live Entry: {live_price}\n" +
+                            f"Live TP1: {live_levels['tp1']}\n" +
+                            f"Live TP2: {live_levels['tp2']}\n" +
+                            f"Live TP3: {live_levels['tp3']}\n" +
+                            f"Live SL: {live_levels['sl']}", "✅")
+                    else:
+                        await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
+                            f"❌ Failed to get live price for {trade_data['pair']} from all APIs", "❌")
+
                     # Add channel and message info
                     trade_data["channel_id"] = message.channel.id
                     trade_data["message_id"] = str(message.id)
                     trade_data["timestamp"] = message.created_at.isoformat()
 
                     # Add to active trades with database persistence
+                    await self.debug_to_channel("6. DATABASE STORAGE", 
+                        f"Saving trade to database with message ID: {message.id}")
                     await self.save_trade_to_db(str(message.id), trade_data)
+                    await self.debug_to_channel("6. DATABASE STORAGE", 
+                        f"✅ Trade saved to database successfully", "✅")
+
+                    await self.debug_to_channel("7. TRACKING ACTIVATED", 
+                        f"✅ Signal tracking activated for {trade_data['pair']} {trade_data['action']}\n" +
+                        f"Entry: {trade_data.get('live_entry', 'No Price')}\n" +
+                        f"Assigned API: {assigned_api}\n" +
+                        f"Status: Active tracking enabled", "✅")
 
                     await self.log_to_discord(f"✅ Started tracking {trade_data['pair']} {trade_data['action']} signal")
                     print(f"🔔 NEW SIGNAL DETECTED: {trade_data['pair']} {trade_data['action']} @ {trade_data.get('live_entry', 'No Price')}")
+                else:
+                    await self.debug_to_channel("2. PARSING SIGNAL", 
+                        "❌ Failed to parse signal - invalid format or missing data", "❌")
             except Exception as e:
+                await self.debug_to_channel("ERROR", 
+                    f"❌ Exception during signal processing: {str(e)}\n" +
+                    f"Error type: {type(e).__name__}", "❌")
                 print(f"❌ Error processing signal: {str(e)}")
                 await self.log_to_discord(f"❌ Error processing signal: {str(e)}")
 
