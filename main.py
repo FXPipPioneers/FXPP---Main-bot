@@ -3423,7 +3423,6 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
         'entry': format_price(entry_price)
     }
 
-
     def calculate_live_tracking_levels(self, live_price: float, pair: str, action: str):
         """Calculate TP and SL levels based on live price for backend tracking"""
         if pair in PAIR_CONFIG:
