@@ -753,7 +753,11 @@ class TradingBot(commands.Bot):
                 await self.remove_trade_from_db(message_id)
 
         except Exception as e:
-            pass
+            # Send error details to debug channel for price checking failures
+            debug_channel = self.get_channel(1412344974871105567)
+            if debug_channel:
+                await debug_channel.send(f"❌ Price level checking failed: {str(e)}")
+            print(f"❌ Price level checking error: {str(e)}")
 
     @tasks.loop(minutes=30)
     async def heartbeat_task(self):
@@ -1640,6 +1644,7 @@ class TradingBot(commands.Bot):
 
                     # Add channel and message info
                     trade_data["channel_id"] = message.channel.id
+                    trade_data["guild_id"] = message.guild.id if message.guild else None
                     trade_data["message_id"] = str(message.id)
                     trade_data["timestamp"] = message.created_at.isoformat()
 
@@ -1969,7 +1974,11 @@ class TradingBot(commands.Bot):
                     ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
                     )
             except Exception as e:
-                pass  # Continue with in-memory storage if database fails
+                # Send error details to debug channel instead of silently failing
+                debug_channel = self.get_channel(1412344974871105567)
+                if debug_channel:
+                    await debug_channel.send(f"❌ Database UPDATE failed for message_id {message_id}: {str(e)}")
+                print(f"❌ Database update error: {str(e)}")
 
     async def remove_trade_from_db(self, message_id: str):
         """Remove completed trade from database"""
@@ -1983,7 +1992,11 @@ class TradingBot(commands.Bot):
                 async with self.db_pool.acquire() as conn:
                     await conn.execute('DELETE FROM active_trades WHERE message_id = $1', message_id)
             except Exception as e:
-                pass  # Continue with in-memory removal if database fails
+                # Send error details to debug channel instead of silently failing
+                debug_channel = self.get_channel(1412344974871105567)
+                if debug_channel:
+                    await debug_channel.send(f"❌ Database DELETE failed for message_id {message_id}: {str(e)}")
+                print(f"❌ Database delete error: {str(e)}")
 
     async def get_active_trades_from_db(self):
         """Get current active trades from database (used by commands)"""
@@ -2502,10 +2515,11 @@ class TradingBot(commands.Bot):
                 for field, value in trade_data.items():
                     if field in ["pair", "action", "entry", "tp1", "tp2", "tp3", "sl"] and value is None:
                         missing_fields.append(field)
-                pass
+                print(f"❌ Signal parsing failed - missing fields: {missing_fields}")
 
         except Exception as e:
-            pass
+            # Log signal parsing failures (can't use await in non-async function)
+            print(f"❌ Signal parsing error: {str(e)}")
 
         return None
 
@@ -5383,7 +5397,7 @@ async def active_trades_view(interaction: discord.Interaction):
     active_trades = await bot.get_active_trades_from_db()
     
     # Send debugging to Discord channel
-    debug_channel = bot.get_channel(1412344974871105567)
+    debug_channel = bot.get_channel(1414220633029611582)
     if debug_channel:
         await debug_channel.send(f"🔍 DEBUG (/activetrades view): Found {len(active_trades)} active trades")
         await debug_channel.send(f"🔍 DEBUG (/activetrades view): Active trades keys: {list(active_trades.keys())}")
