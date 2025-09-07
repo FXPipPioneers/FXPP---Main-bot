@@ -568,6 +568,7 @@ class TradingBot(commands.Bot):
 
                                 # Add metadata
                                 trade_data["channel_id"] = channel.id
+                                trade_data["guild_id"] = guild.id  # Fix: Add missing guild_id for database
                                 trade_data["message_id"] = str(message.id)
                                 trade_data["timestamp"] = message.created_at.isoformat()
                                 trade_data["recovered"] = True  # Mark as recovered signal
