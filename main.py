@@ -923,6 +923,16 @@ class TradingBot(commands.Bot):
                         last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
                 ''')
+                
+                # Add missing columns for existing tables (migration)
+                try:
+                    await conn.execute('''
+                        ALTER TABLE active_trades 
+                        ADD COLUMN IF NOT EXISTS assigned_api VARCHAR(30) DEFAULT 'currencybeacon'
+                    ''')
+                    print("✅ Database migration: ensured assigned_api column exists")
+                except Exception as e:
+                    print(f"Database migration info: {e}")  # May already exist
 
                 # Missed hits during night pause table for chronological processing
                 await conn.execute('''
