@@ -1930,8 +1930,16 @@ class TradingBot(commands.Bot):
                     trade_data.get("status", "active"), ','.join(trade_data.get("tp_hits", [])), 
                     trade_data.get("breakeven_active", False)
                     )
+                # Send success confirmation to debug channel
+                debug_channel = self.get_channel(1412344974871105567)
+                if debug_channel:
+                    await debug_channel.send(f"✅ Database INSERT successful for message_id: {message_id}")
             except Exception as e:
-                pass  # Continue with in-memory storage if database fails
+                # Send error details to debug channel instead of silently failing
+                debug_channel = self.get_channel(1412344974871105567)
+                if debug_channel:
+                    await debug_channel.send(f"❌ Database INSERT failed for message_id {message_id}: {str(e)}")
+                print(f"❌ Database save error: {str(e)}")
 
     async def update_trade_in_db(self, message_id: str, trade_data: dict):
         """Update an existing trade in database"""
