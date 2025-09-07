@@ -1499,51 +1499,24 @@ class TradingBot(commands.Bot):
             (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot) and
             PRICE_TRACKING_CONFIG["signal_keyword"] in message.content):
 
-            await self.debug_to_channel("1. SIGNAL DETECTED", 
-                f"Message from: {message.author.name} ({message.author.id})\n" +
-                f"Channel: {message.channel.name} ({message.channel.id})\n" +
-                f"Content: {message.content[:500]}...")
-
             try:
                 # Parse the signal message
-                await self.debug_to_channel("2. PARSING SIGNAL", "Starting to parse signal message...")
                 trade_data = self.parse_signal_message(message.content)
                 
                 if trade_data:
-                    await self.debug_to_channel("2. PARSING SIGNAL", 
-                        f"✅ Successfully parsed:\n" +
-                        f"Pair: {trade_data.get('pair')}\n" +
-                        f"Action: {trade_data.get('action')}\n" +
-                        f"Entry: {trade_data.get('entry')}\n" +
-                        f"TP1: {trade_data.get('tp1')}\n" +
-                        f"TP2: {trade_data.get('tp2')}\n" +
-                        f"TP3: {trade_data.get('tp3')}\n" +
-                        f"SL: {trade_data.get('sl')}", "✅")
-                    
                     # Determine which API works for this pair and assign it permanently
-                    await self.debug_to_channel("3. API ASSIGNMENT", f"Testing APIs for pair: {trade_data['pair']}")
                     assigned_api = await self.get_working_api_for_pair(trade_data["pair"])
                     trade_data["assigned_api"] = assigned_api
-                    await self.debug_to_channel("3. API ASSIGNMENT", 
-                        f"✅ Assigned API: {assigned_api} for {trade_data['pair']}", "✅")
                     
                     # Get live price using the assigned API for consistency, with fallback
-                    await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
-                        f"Getting live price for {trade_data['pair']} using {assigned_api}")
                     live_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
                     
                     # If assigned API fails, try fallback
                     if live_price is None:
-                        await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
-                            f"❌ Assigned API {assigned_api} failed, trying fallback...", "⚠️")
                         live_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
 
                     if live_price:
-                        await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
-                            f"✅ Got live price: {live_price} for {trade_data['pair']}", "✅")
-                        
                         # Calculate live-price-based TP/SL levels for tracking
-                        await self.debug_to_channel("5. LEVEL CALCULATION", "Calculating live tracking levels...")
                         live_levels = self.calculate_live_tracking_levels(
                             live_price, trade_data["pair"], trade_data["action"]
                         )
@@ -1563,44 +1536,19 @@ class TradingBot(commands.Bot):
                         trade_data["tp3"] = live_levels["tp3"]
                         trade_data["sl"] = live_levels["sl"]
 
-                        await self.debug_to_channel("5. LEVEL CALCULATION", 
-                            f"✅ Calculated levels:\n" +
-                            f"Live Entry: {live_price}\n" +
-                            f"Live TP1: {live_levels['tp1']}\n" +
-                            f"Live TP2: {live_levels['tp2']}\n" +
-                            f"Live TP3: {live_levels['tp3']}\n" +
-                            f"Live SL: {live_levels['sl']}", "✅")
-                    else:
-                        await self.debug_to_channel("4. LIVE PRICE RETRIEVAL", 
-                            f"❌ Failed to get live price for {trade_data['pair']} from all APIs", "❌")
-
                     # Add channel and message info
                     trade_data["channel_id"] = message.channel.id
                     trade_data["message_id"] = str(message.id)
                     trade_data["timestamp"] = message.created_at.isoformat()
 
                     # Add to active trades with database persistence
-                    await self.debug_to_channel("6. DATABASE STORAGE", 
-                        f"Saving trade to database with message ID: {message.id}")
                     await self.save_trade_to_db(str(message.id), trade_data)
-                    await self.debug_to_channel("6. DATABASE STORAGE", 
-                        f"✅ Trade saved to database successfully", "✅")
-
-                    await self.debug_to_channel("7. TRACKING ACTIVATED", 
-                        f"✅ Signal tracking activated for {trade_data['pair']} {trade_data['action']}\n" +
-                        f"Entry: {trade_data.get('live_entry', 'No Price')}\n" +
-                        f"Assigned API: {assigned_api}\n" +
-                        f"Status: Active tracking enabled", "✅")
 
                     await self.log_to_discord(f"✅ Started tracking {trade_data['pair']} {trade_data['action']} signal")
-                else:
-                    await self.debug_to_channel("2. PARSING SIGNAL", 
-                        "❌ Failed to parse signal - invalid format or missing data", "❌")
+                    print(f"🔔 NEW SIGNAL DETECTED: {trade_data['pair']} {trade_data['action']} @ {trade_data.get('live_entry', 'No Price')}")
             except Exception as e:
-                await self.debug_to_channel("ERROR", 
-                    f"❌ Exception during signal processing: {str(e)}\n" +
-                    f"Error type: {type(e).__name__}", "❌")
                 print(f"❌ Error processing signal: {str(e)}")
+                await self.log_to_discord(f"❌ Error processing signal: {str(e)}")
 
         # Process message for level system
         await self.process_message_for_levels(message)
@@ -1972,44 +1920,34 @@ class TradingBot(commands.Bot):
         # Night pause: 01:00-07:00 Amsterdam time on weekdays (Monday-Friday)
         return weekday <= 4 and 1 <= hour < 7
 
+    def clean_pair_name(self, pair: str) -> str:
+        """Centralized function to clean trading pair names for API consistency"""
+        # Remove forward slashes, asterisks, spaces, and other special characters
+        # Keep only alphanumeric characters
+        cleaned = re.sub(r'[^A-Za-z0-9]', '', pair.strip())
+        return cleaned.upper()
+
     async def get_working_api_for_pair(self, pair: str) -> str:
         """Determine which API successfully provides a price for a trading pair"""
-        pair_clean = pair.replace("/", "").upper()
-        
-        await self.debug_to_channel("3.1 API TESTING", 
-            f"Testing APIs for {pair_clean} in priority order:\n{', '.join(PRICE_TRACKING_CONFIG['api_priority_order'])}")
+        pair_clean = self.clean_pair_name(pair)
         
         # Try APIs in priority order and return the first one that works
-        for i, api_name in enumerate(PRICE_TRACKING_CONFIG["api_priority_order"], 1):
+        for api_name in PRICE_TRACKING_CONFIG["api_priority_order"]:
             try:
-                await self.debug_to_channel("3.1 API TESTING", 
-                    f"Testing API {i}/4: {api_name} for {pair_clean}")
-                
                 # Check if API has key configured
                 api_key = PRICE_TRACKING_CONFIG["api_keys"].get(f"{api_name}_key")
                 if not api_key:
-                    await self.debug_to_channel("3.1 API TESTING", 
-                        f"❌ {api_name}: No API key configured", "❌")
                     continue
                 
                 price = await self.get_price_from_single_api(api_name, pair_clean)
                 if price is not None:
-                    await self.debug_to_channel("3.1 API TESTING", 
-                        f"✅ {api_name}: Success! Price: {price}", "✅")
                     print(f"✅ API assignment: {pair_clean} will use {api_name} (price: {price})")
                     return api_name
-                else:
-                    await self.debug_to_channel("3.1 API TESTING", 
-                        f"❌ {api_name}: Returned None (no data or error)", "❌")
             except Exception as e:
-                await self.debug_to_channel("3.1 API TESTING", 
-                    f"❌ {api_name}: Exception - {str(e)[:100]}", "❌")
                 print(f"⚠️ {api_name} failed for {pair_clean}: {str(e)[:100]}")
                 continue
         
         # If all APIs fail, default to currencybeacon
-        await self.debug_to_channel("3.1 API TESTING", 
-            f"❌ All APIs failed for {pair_clean}, defaulting to currencybeacon", "⚠️")
         print(f"⚠️ All APIs failed for {pair_clean}, defaulting to currencybeacon")
         return "currencybeacon"
 
@@ -2055,7 +1993,7 @@ class TradingBot(commands.Bot):
             return None
 
         # Normalize pair format for different APIs
-        pair_clean = pair.replace("/", "").upper()
+        pair_clean = self.clean_pair_name(pair)
 
         # If specific API requested (for signal consistency), use only that API
         if specific_api:
@@ -2116,62 +2054,22 @@ class TradingBot(commands.Bot):
                     params["base"] = pair_clean[:3]
                     params["symbols"] = pair_clean[3:]
 
-                # Debug the API call
-                await self.debug_to_channel("API DEBUG", 
-                    f"🔍 CURRENCYBEACON API CALL:\n" +
-                    f"URL: {url}\n" +
-                    f"Params: {params}\n" +
-                    f"Pair: {pair_clean}")
-
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        await self.debug_to_channel("API DEBUG", 
-                            f"🔍 CURRENCYBEACON RESPONSE:\n" +
-                            f"Status: {response.status}\n" +
-                            f"Headers: {dict(response.headers)}")
-                        
                         if response.status == 200:
                             data = await response.json()
-                            await self.debug_to_channel("API DEBUG", 
-                                f"🔍 CURRENCYBEACON DATA:\n" +
-                                f"Raw data: {str(data)[:500]}")
-                            
                             if "response" in data and "rates" in data["response"]:
                                 rates = data["response"]["rates"]
-                                await self.debug_to_channel("API DEBUG", 
-                                    f"🔍 CURRENCYBEACON RATES:\n" +
-                                    f"Available rates: {list(rates.keys())}\n" +
-                                    f"Looking for: {pair_clean[3:] if len(pair_clean) == 6 else 'XAU'}")
-                                
                                 if pair_clean == "XAUUSD" and "XAU" in rates:
-                                    price = 1.0 / float(rates["XAU"])
-                                    await self.debug_to_channel("API DEBUG", 
-                                        f"✅ CURRENCYBEACON SUCCESS (XAUUSD): {price}", "✅")
-                                    return price
+                                    return 1.0 / float(rates["XAU"])
                                 else:
                                     target_currency = pair_clean[3:]
                                     if target_currency in rates:
-                                        price = float(rates[target_currency])
-                                        await self.debug_to_channel("API DEBUG", 
-                                            f"✅ CURRENCYBEACON SUCCESS ({pair_clean}): {price}", "✅")
-                                        return price
-                                    else:
-                                        await self.debug_to_channel("API DEBUG", 
-                                            f"❌ CURRENCYBEACON: Target currency '{target_currency}' not found in rates", "❌")
-                            else:
-                                await self.debug_to_channel("API DEBUG", 
-                                    f"❌ CURRENCYBEACON: Missing 'response' or 'rates' in data structure", "❌")
+                                        return float(rates[target_currency])
                         elif response.status == 429:
-                            await self.debug_to_channel("API DEBUG", 
-                                f"❌ CURRENCYBEACON: Rate limit reached (429)", "❌")
                             await self.log_api_limit_warning("CurrencyBeacon", "Monthly limit reached - switching to backup API")
                         elif response.status == 403:
-                            await self.debug_to_channel("API DEBUG", 
-                                f"❌ CURRENCYBEACON: Access forbidden (403) - Invalid API key", "❌")
                             await self.log_api_limit_warning("CurrencyBeacon", "API key invalid or expired")
-                        else:
-                            await self.debug_to_channel("API DEBUG", 
-                                f"❌ CURRENCYBEACON: HTTP {response.status}", "❌")
 
             # === 2. EXCHANGERATE-API (Priority #2) ===
             elif api_name == "exchangerate_api":
@@ -2376,7 +2274,10 @@ class TradingBot(commands.Bot):
                 if "Trade Signal For:" in line:
                     parts = line.split("Trade Signal For:")
                     if len(parts) > 1:
-                        trade_data["pair"] = parts[1].strip()
+                        # Extract and clean the pair name using centralized function
+                        raw_pair = parts[1].strip()
+                        cleaned_pair = self.clean_pair_name(raw_pair)
+                        trade_data["pair"] = cleaned_pair
                         break
 
             # Extract action from "Entry Type: Buy execution" or "Entry Type: Sell execution"
@@ -5538,8 +5439,8 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
     await interaction.response.defer()
 
     try:
-        # Normalize pair format
-        pair_clean = pair.replace("/", "").upper()
+        # Normalize pair format using centralized cleaning
+        pair_clean = bot.clean_pair_name(pair)
         
         # Get prices from all APIs
         api_results = await bot.get_all_api_prices(pair_clean)
