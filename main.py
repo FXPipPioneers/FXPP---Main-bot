@@ -99,6 +99,9 @@ GOLD_PIONEER_ROLE_ID = 1384489575187091466
 # Giveaway channel ID (always post giveaways here)
 GIVEAWAY_CHANNEL_ID = 1405490561963786271
 
+# Debug channel ID for system debug messages
+DEBUG_CHANNEL_ID = 1414220633029611582
+
 # Global storage for active giveaways
 ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
 
@@ -754,7 +757,7 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             # Send error details to debug channel for price checking failures
-            debug_channel = self.get_channel(1412344974871105567)
+            debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
             if debug_channel:
                 await debug_channel.send(f"❌ Price level checking failed: {str(e)}")
             print(f"❌ Price level checking error: {str(e)}")
@@ -923,6 +926,7 @@ class TradingBot(commands.Bot):
                         status VARCHAR(50) DEFAULT 'active',
                         tp_hits TEXT DEFAULT '',
                         breakeven_active BOOLEAN DEFAULT FALSE,
+                        entry_type VARCHAR(30),
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
@@ -935,6 +939,15 @@ class TradingBot(commands.Bot):
                         ADD COLUMN IF NOT EXISTS assigned_api VARCHAR(30) DEFAULT 'currencybeacon'
                     ''')
                     print("✅ Database migration: ensured assigned_api column exists")
+                except Exception as e:
+                    print(f"Database migration info: {e}")  # May already exist
+                
+                try:
+                    await conn.execute('''
+                        ALTER TABLE active_trades 
+                        ADD COLUMN IF NOT EXISTS entry_type VARCHAR(30)
+                    ''')
+                    print("✅ Database migration: ensured entry_type column exists")
                 except Exception as e:
                     print(f"Database migration info: {e}")  # May already exist
 
@@ -1534,7 +1547,7 @@ class TradingBot(commands.Bot):
 
     async def debug_to_channel(self, step: str, details: str, status: str = "ℹ️"):
         """Send debugging information to specific Discord channel"""
-        debug_channel_id = "1412344974871105567"
+        debug_channel_id = str(DEBUG_CHANNEL_ID)
         try:
             channel = self.get_channel(int(debug_channel_id))
             if channel:
@@ -1876,7 +1889,7 @@ class TradingBot(commands.Bot):
                 rows = await conn.fetch('SELECT * FROM active_trades ORDER BY created_at DESC')
                 
                 # Send debugging to Discord channel
-                debug_channel = self.get_channel(1412344974871105567)
+                debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
                 if debug_channel:
                     await debug_channel.send(f"🔍 DEBUG (load_active_trades_from_db): Found {len(rows)} rows in active_trades table")
 
@@ -1900,6 +1913,7 @@ class TradingBot(commands.Bot):
                         "status": row['status'],
                         "tp_hits": row['tp_hits'].split(',') if row['tp_hits'] else [],
                         "breakeven_active": row['breakeven_active'],
+                        "entry_type": row.get('entry_type'),  # Add entry_type field
                         "channel_id": row['channel_id'],
                         "guild_id": row['guild_id'],
                         "message_id": row['message_id'],
@@ -1933,8 +1947,8 @@ class TradingBot(commands.Bot):
                             message_id, channel_id, guild_id, pair, action,
                             entry_price, tp1_price, tp2_price, tp3_price, sl_price,
                             discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
-                            live_entry, assigned_api, status, tp_hits, breakeven_active
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                            live_entry, assigned_api, status, tp_hits, breakeven_active, entry_type
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
                     ''', 
                     message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
                     trade_data["pair"], trade_data["action"], 
@@ -1943,15 +1957,15 @@ class TradingBot(commands.Bot):
                     trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
                     trade_data.get("live_entry"), trade_data.get("assigned_api", "currencybeacon"), 
                     trade_data.get("status", "active"), ','.join(trade_data.get("tp_hits", [])), 
-                    trade_data.get("breakeven_active", False)
+                    trade_data.get("breakeven_active", False), trade_data.get("entry_type")
                     )
                 # Send success confirmation to debug channel
-                debug_channel = self.get_channel(1412344974871105567)
+                debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
                 if debug_channel:
                     await debug_channel.send(f"✅ Database INSERT successful for message_id: {message_id}")
             except Exception as e:
                 # Send error details to debug channel instead of silently failing
-                debug_channel = self.get_channel(1412344974871105567)
+                debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
                 if debug_channel:
                     await debug_channel.send(f"❌ Database INSERT failed for message_id {message_id}: {str(e)}")
                 print(f"❌ Database save error: {str(e)}")
@@ -1975,7 +1989,34 @@ class TradingBot(commands.Bot):
                     )
             except Exception as e:
                 # Send error details to debug channel instead of silently failing
-                debug_channel = self.get_channel(1412344974871105567)
+                debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
+                if debug_channel:
+                    await debug_channel.send(f"❌ Database UPDATE failed for message_id {message_id}: {str(e)}")
+                print(f"❌ Database update error: {str(e)}")
+
+    async def update_limit_trade_in_db(self, message_id: str, trade_data: dict):
+        """Update a limit trade in database with new price levels after entry hit"""
+        # Always update in-memory first
+        PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
+
+        # Also update database if available
+        if self.db_pool:
+            try:
+                async with self.db_pool.acquire() as conn:
+                    await conn.execute('''
+                        UPDATE active_trades SET 
+                            entry_price = $2, tp1_price = $3, tp2_price = $4, tp3_price = $5, sl_price = $6,
+                            live_entry = $7, status = $8, tp_hits = $9, breakeven_active = $10, last_updated = NOW()
+                        WHERE message_id = $1
+                    ''', 
+                    message_id, trade_data["entry"], trade_data["tp1"], trade_data["tp2"], 
+                    trade_data["tp3"], trade_data["sl"], trade_data.get("live_entry"),
+                    trade_data.get("status", "active"), ','.join(trade_data.get("tp_hits", [])), 
+                    trade_data.get("breakeven_active", False)
+                    )
+            except Exception as e:
+                # Send error details to debug channel instead of silently failing
+                debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
                 if debug_channel:
                     await debug_channel.send(f"❌ Database UPDATE failed for message_id {message_id}: {str(e)}")
                 print(f"❌ Database update error: {str(e)}")
@@ -1993,7 +2034,7 @@ class TradingBot(commands.Bot):
                     await conn.execute('DELETE FROM active_trades WHERE message_id = $1', message_id)
             except Exception as e:
                 # Send error details to debug channel instead of silently failing
-                debug_channel = self.get_channel(1412344974871105567)
+                debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
                 if debug_channel:
                     await debug_channel.send(f"❌ Database DELETE failed for message_id {message_id}: {str(e)}")
                 print(f"❌ Database delete error: {str(e)}")
@@ -2422,9 +2463,10 @@ class TradingBot(commands.Bot):
                 "tp2": None,
                 "tp3": None,
                 "sl": None,
-                "status": "active",
+                "status": "active",  # Will be set based on entry type
                 "tp_hits": [],
-                "breakeven_active": False
+                "breakeven_active": False,
+                "entry_type": None  # Store full entry type (Buy/Sell + limit/execution)
             }
 
             # Find pair from "Trade Signal For: PAIR"
@@ -2438,10 +2480,20 @@ class TradingBot(commands.Bot):
                         trade_data["pair"] = cleaned_pair
                         break
 
-            # Extract action from "Entry Type: Buy execution" or "Entry Type: Sell execution"
-            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)', content, re.IGNORECASE)
+            # Extract full entry type from "Entry Type: Buy execution/limit" or "Entry Type: Sell execution/limit"
+            entry_type_match = re.search(r'Entry Type:\s*(Buy|Sell)\s+(execution|limit)', content, re.IGNORECASE)
             if entry_type_match:
-                trade_data["action"] = entry_type_match.group(1).upper()
+                action = entry_type_match.group(1).upper()  # BUY or SELL
+                order_type = entry_type_match.group(2).lower()  # execution or limit
+                
+                trade_data["action"] = action
+                trade_data["entry_type"] = f"{action.lower()} {order_type}"  # "buy execution", "sell limit", etc.
+                
+                # Set status based on order type
+                if order_type == "limit":
+                    trade_data["status"] = "pending_entry"  # Wait for entry to be hit
+                else:  # execution
+                    trade_data["status"] = "active"  # Start tracking immediately
             else:
                 # Fallback to old format detection
                 for line in lines:
@@ -2546,13 +2598,17 @@ class TradingBot(commands.Bot):
             return True
 
     async def check_price_levels(self, message_id: str, trade_data: Dict) -> bool:
-        """Check if current price has hit any TP/SL levels"""
+        """Check if current price has hit any TP/SL levels, including entry hits for limit orders"""
         try:
             # First check if the original message still exists
             if not await self.check_message_still_exists(message_id, trade_data):
                 # Message was deleted, remove from tracking
                 await self.remove_trade_from_db(message_id)
                 return True  # Return True to indicate this trade should be removed from active tracking
+                
+            # Check if this is a pending limit order waiting for entry
+            if trade_data.get("status") == "pending_entry":
+                return await self.check_limit_entry_hit(message_id, trade_data)
             # Use the assigned API for this specific signal to ensure consistency
             assigned_api = trade_data.get("assigned_api", "currencybeacon")
             current_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
@@ -2688,6 +2744,92 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
+
+    async def check_limit_entry_hit(self, message_id: str, trade_data: Dict) -> bool:
+        """Check if limit entry has been hit and convert to active tracking"""
+        try:
+            # Use the assigned API for this specific signal
+            assigned_api = trade_data.get("assigned_api", "currencybeacon")
+            current_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
+            
+            # If assigned API fails, try fallback
+            if current_price is None:
+                current_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
+                if current_price is None:
+                    return False  # No price available, keep checking
+            
+            action = trade_data["action"]
+            entry_price = trade_data["entry"]
+            entry_type = trade_data.get("entry_type", "").lower()
+            
+            # Check if entry has been hit based on order type
+            entry_hit = False
+            if "buy limit" in entry_type:
+                # Buy limit: price must drop to or below entry price
+                entry_hit = current_price <= entry_price
+            elif "sell limit" in entry_type:
+                # Sell limit: price must rise to or above entry price  
+                entry_hit = current_price >= entry_price
+            
+            if entry_hit:
+                # Entry has been hit! Send notification and switch to active tracking
+                await self.handle_limit_entry_hit(message_id, trade_data, current_price)
+                return False  # Don't remove from tracking, continue with active monitoring
+            
+            return False  # Entry not hit yet, keep monitoring
+            
+        except Exception as e:
+            print(f"Error checking limit entry hit: {e}")
+            return False
+
+    async def handle_limit_entry_hit(self, message_id: str, trade_data: Dict, current_price: float):
+        """Handle when a limit entry gets hit - send notification and switch to active tracking"""
+        try:
+            # Send entry hit notification
+            await self.send_entry_hit_notification(message_id, trade_data)
+            
+            # Recalculate TP/SL levels based on current live price (not original entry price)
+            live_levels = self.calculate_live_tracking_levels(
+                current_price, 
+                trade_data["pair"], 
+                trade_data["action"]
+            )
+            
+            # Update trade data with new live-based levels
+            trade_data["live_entry"] = current_price
+            trade_data["entry"] = live_levels["entry"]  # Update entry to current price
+            trade_data["tp1"] = live_levels["tp1"]
+            trade_data["tp2"] = live_levels["tp2"] 
+            trade_data["tp3"] = live_levels["tp3"]
+            trade_data["sl"] = live_levels["sl"]
+            trade_data["status"] = "active"  # Switch from pending_entry to active
+            
+            # Update in database with new price levels
+            await self.update_limit_trade_in_db(message_id, trade_data)
+            
+            print(f"✅ Limit entry hit for {trade_data['pair']} - switched to active tracking")
+            
+        except Exception as e:
+            print(f"Error handling limit entry hit: {e}")
+
+    async def send_entry_hit_notification(self, message_id: str, trade_data: Dict):
+        """Send notification when limit entry gets hit"""
+        try:
+            channel = self.get_channel(trade_data.get("channel_id"))
+            if not channel:
+                return
+                
+            message = await channel.fetch_message(int(message_id))
+            if not message:
+                return
+            
+            action = trade_data["action"].lower()
+            notification = f"@everyone our {action} limit has been hit ✅"
+            
+            await message.reply(notification)
+            
+        except Exception as e:
+            print(f"Error sending entry hit notification: {e}")
 
     async def process_night_pause_hits(self):
         """Process all missed hits that occurred during night pause in chronological order with trading logic validation"""
@@ -2898,7 +3040,7 @@ class TradingBot(commands.Bot):
         """Send breakeven hit notification"""
         try:
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
-            notification = f"This pair reversed to breakeven after we hit TP2. As we stated, we had already moved our SL to breakeven, so we were out safe.\n@everyone"
+            notification = f"@everyone TP2 has been hit & price has reversed to breakeven, so as usual, we're out safe 🫡"
 
             # Add offline hit indication if applicable
             if offline_hit:
@@ -5631,7 +5773,167 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
         )
         await interaction.followup.send(embed=embed)
 
-
+@bot.tree.command(name="sl-tpscraper", description="[OWNER ONLY] Analyze trade signals and performance within a date range")
+@app_commands.describe(
+    start_date="Start date (format: YYYY-MM-DD, e.g., 2025-09-01)",
+    end_date="End date (format: YYYY-MM-DD, e.g., 2025-09-09)"
+)
+async def sl_tp_scraper_command(interaction: discord.Interaction, start_date: str, end_date: str):
+    """Analyze trading signals and performance within specified date range"""
+    if not await owner_check(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    try:
+        # Parse and validate dates
+        from datetime import datetime
+        import re
+        
+        # Validate date format
+        date_pattern = r'^\d{4}-\d{2}-\d{2}$'
+        if not re.match(date_pattern, start_date) or not re.match(date_pattern, end_date):
+            await interaction.followup.send("❌ Invalid date format. Use YYYY-MM-DD (e.g., 2025-09-01)", ephemeral=True)
+            return
+        
+        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
+        end_datetime = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        
+        if start_datetime > end_datetime:
+            await interaction.followup.send("❌ Start date must be before or equal to end date", ephemeral=True)
+            return
+        
+        # Get the target channel
+        target_channel_id = 1384668129036075109
+        target_channel = bot.get_channel(target_channel_id)
+        
+        if not target_channel:
+            await interaction.followup.send("❌ Target channel not found", ephemeral=True)
+            return
+        
+        # Fetch messages from the channel within date range
+        messages = []
+        trade_signals = []
+        
+        async for message in target_channel.history(limit=None, after=start_datetime, before=end_datetime):
+            messages.append(message)
+            
+            # Check if message is a trade signal
+            if (PRICE_TRACKING_CONFIG["signal_keyword"] in message.content and 
+                (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot)):
+                
+                # Parse the signal
+                signal_data = bot.parse_signal_message(message.content)
+                if signal_data:
+                    signal_data["message_id"] = str(message.id)
+                    signal_data["timestamp"] = message.created_at
+                    signal_data["channel_id"] = message.channel.id
+                    trade_signals.append(signal_data)
+        
+        # Get current status of each signal from database
+        closed_trades = 0
+        open_trades = 0
+        tp1_hits = 0
+        tp2_hits = 0
+        tp3_hits = 0
+        sl_hits = 0
+        
+        if bot.db_pool:
+            async with bot.db_pool.acquire() as conn:
+                for signal in trade_signals:
+                    message_id = signal["message_id"]
+                    
+                    # Get trade status from database
+                    trade_record = await conn.fetchrow(
+                        "SELECT status, tp_hits FROM active_trades WHERE message_id = $1", 
+                        message_id
+                    )
+                    
+                    if trade_record:
+                        status = trade_record['status']
+                        tp_hits_list = trade_record['tp_hits'] or []
+                        
+                        # Check if trade is closed
+                        if 'closed' in status.lower():
+                            closed_trades += 1
+                        else:
+                            open_trades += 1
+                        
+                        # Count TP and SL hits
+                        if 'tp1' in tp_hits_list:
+                            tp1_hits += 1
+                        if 'tp2' in tp_hits_list:
+                            tp2_hits += 1
+                        if 'tp3' in tp_hits_list:
+                            tp3_hits += 1
+                        if 'sl' in status.lower():
+                            sl_hits += 1
+                    else:
+                        # Trade not in database, consider it open
+                        open_trades += 1
+        else:
+            # No database, all trades considered open
+            open_trades = len(trade_signals)
+        
+        # Calculate winrate: (total TP1 hits / total signals) * 100
+        total_signals = len(trade_signals)
+        if total_signals > 0:
+            winrate = round((tp1_hits / total_signals) * 100, 1)
+        else:
+            winrate = 0.0
+        
+        # Create results embed
+        embed = discord.Embed(
+            title="📊 SL-TP Scraper Analysis",
+            description=f"**Date Range:** {start_date} to {end_date}",
+            color=discord.Color.blue()
+        )
+        
+        # Overview section
+        embed.add_field(
+            name="📈 Overview",
+            value=f"**Total Trade Signals:** {total_signals}\n" +
+                  f"**Closed Trades:** {closed_trades}\n" +
+                  f"**Open Trades:** {open_trades}",
+            inline=True
+        )
+        
+        # Performance section
+        embed.add_field(
+            name="🎯 Performance",
+            value=f"**TP1 Hits:** {tp1_hits}\n" +
+                  f"**TP2 Hits:** {tp2_hits}\n" +
+                  f"**TP3 Hits:** {tp3_hits}\n" +
+                  f"**SL Hits:** {sl_hits}",
+            inline=True
+        )
+        
+        # Winrate section
+        embed.add_field(
+            name="📊 Win Rate",
+            value=f"**{winrate}%**\n" +
+                  f"*(TP1 hits / total signals)*",
+            inline=True
+        )
+        
+        # Additional info
+        embed.add_field(
+            name="ℹ️ Analysis Details",
+            value=f"• Scanned **{len(messages)}** total messages\n" +
+                  f"• Found **{total_signals}** trade signals\n" +
+                  f"• Channel: <#{target_channel_id}>",
+            inline=False
+        )
+        
+        embed.set_footer(text="SL-TP Scraper • Trade Analysis Complete")
+        
+        await interaction.followup.send(embed=embed)
+        
+    except ValueError as e:
+        await interaction.followup.send(f"❌ Date parsing error: {str(e)}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Analysis error: {str(e)}", ephemeral=True)
+        print(f"SL-TP Scraper error: {e}")
 
 # Web server for health checks
 async def web_server():
