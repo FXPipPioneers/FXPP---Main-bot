@@ -8,12 +8,21 @@ This project is a professional Discord bot designed for trading signal distribut
 - Bot owner restricted to Discord ID: 462707111365836801
 - TP/SL calculations updated: TP1=20 pips, TP2=40 pips, TP3=70 pips, SL=50 pips (changed from TP2=50, TP3=100, SL=70)
 
-## Recent Changes (September 6, 2025)
-- **15-API PRICE TRACKING POWERHOUSE**: Completely rebuilt price tracking system with 15 APIs for maximum accuracy and reliability
-- **OPTIMIZED PERFORMANCE**: Reduced price check interval from 225s to 45s with smart rotation across all 15 APIs
-- **XAUUSD ACCURACY FIX**: Added gold specialist APIs (Metals-API, Polygon) and removed inaccurate ETF proxies for precise gold pricing
-- **BULLETPROOF RELIABILITY**: With 15 APIs, if 10 fail, the bot still has 5 backups - virtually unbreakable price tracking
-- **SMART API ROTATION**: Priority system uses most accurate APIs first, with automatic fallbacks and rate limit management
+## Recent Changes (September 7, 2025)
+- **DATABASE NUMERIC FIELD OVERFLOW FIX**: Fixed critical database schema issue preventing large price values from being saved by increasing precision from DECIMAL(12,8) to DECIMAL(30,15) for all price columns - now handles any massive price values with up to 15 decimal places from any API
+- **IMMEDIATE DELETION DETECTION FIX**: Fixed critical issue where manually deleted signals still appeared in /activetrades view - now checks for deleted messages immediately when running /activetrades instead of waiting for 5-minute interval
+- **BTCUSD PARSING FIX**: Enhanced regex patterns for better BTCUSD signal parsing reliability with improved decimal number matching
+- **US100/GER40 TRACKING DISABLED**: Permanently disabled signal tracking for US100 and GER40 pairs to prevent tracking these volatile instruments
+- **PRICE TRACKING ALWAYS ON**: Removed /pricetracking command and made price tracking permanently enabled for 24/7 monitoring
+- **COMMAND CLEANUP**: Removed /sl-tpscraper command as it was no longer needed
+- **ENHANCED DEBUG LOGGING**: Added special debug logging for BTCUSD signals to help troubleshoot any future parsing issues
+
+## Previous Changes (September 7, 2025)
+- **LIMIT ORDER FUNCTIONALITY**: Implemented proper limit order handling with `entry_type` field to distinguish between execution and limit orders
+- **ENTRY HIT DETECTION**: Added automatic detection when limit orders are triggered with "@everyone our buy/sell limit has been hit ✅" notifications
+- **LIVE PRICE RECALCULATION**: Limit orders now recalculate TP/SL levels based on current live price when entry is hit, ensuring accurate tracking
+- **STATUS MANAGEMENT**: Limit orders start with "pending_entry" status and automatically switch to "active" once entry price is reached
+- **DATABASE MIGRATION**: Added entry_type column to active_trades table with proper data migration handling
 
 ## Previous Changes (September 1, 2025)
 - **24/7 PERSISTENT TRADE TRACKING**: Implemented PostgreSQL database storage for all active trading signals, ensuring trades persist through bot restarts, updates, and downtime
@@ -57,9 +66,7 @@ This project is a professional Discord bot designed for trading signal distribut
 - DISCORD_TOKEN_PART1 & DISCORD_TOKEN_PART2 (split for security)
 - DISCORD_CLIENT_ID_PART1 & DISCORD_CLIENT_ID_PART2
 - DATABASE_URL (automatically provided by Render PostgreSQL)
-- **15-API Price Tracking System (MAXIMUM ACCURACY)**:
-  - Original 4 (Fixed): FXAPI_KEY, ALPHA_VANTAGE_KEY, TWELVE_DATA_KEY, FMP_KEY
-  - 11 New APIs: EXCHANGERATE_API_KEY, CURRENCYLAYER_KEY, FIXER_API_KEY, OPENEXCHANGE_KEY, CURRENCYAPI_KEY, APILAYER_KEY, ABSTRACTAPI_KEY, CURRENCYBEACON_KEY, METALS_API_KEY, POLYGON_API_KEY, IEX_API_KEY
+- **Price Tracking APIs**: FXAPI_KEY, ALPHA_VANTAGE_KEY, TWELVE_DATA_KEY, FMP_KEY (for live price monitoring)
 
 ### Deployment Files
 - `render.yaml`: Service configuration for Render deployment

@@ -928,17 +928,17 @@ class TradingBot(commands.Bot):
                         guild_id BIGINT NOT NULL,
                         pair VARCHAR(20) NOT NULL,
                         action VARCHAR(10) NOT NULL,
-                        entry_price DECIMAL(12,8) NOT NULL,
-                        tp1_price DECIMAL(12,8) NOT NULL,
-                        tp2_price DECIMAL(12,8) NOT NULL,
-                        tp3_price DECIMAL(12,8) NOT NULL,
-                        sl_price DECIMAL(12,8) NOT NULL,
-                        discord_entry DECIMAL(12,8),
-                        discord_tp1 DECIMAL(12,8),
-                        discord_tp2 DECIMAL(12,8),
-                        discord_tp3 DECIMAL(12,8),
-                        discord_sl DECIMAL(12,8),
-                        live_entry DECIMAL(12,8),
+                        entry_price DECIMAL(30,15) NOT NULL,
+                        tp1_price DECIMAL(30,15) NOT NULL,
+                        tp2_price DECIMAL(30,15) NOT NULL,
+                        tp3_price DECIMAL(30,15) NOT NULL,
+                        sl_price DECIMAL(30,15) NOT NULL,
+                        discord_entry DECIMAL(30,15),
+                        discord_tp1 DECIMAL(30,15),
+                        discord_tp2 DECIMAL(30,15),
+                        discord_tp3 DECIMAL(30,15),
+                        discord_sl DECIMAL(30,15),
+                        live_entry DECIMAL(30,15),
                         assigned_api VARCHAR(30) DEFAULT 'currencybeacon',
                         status VARCHAR(50) DEFAULT 'active',
                         tp_hits TEXT DEFAULT '',
@@ -965,6 +965,26 @@ class TradingBot(commands.Bot):
                         ADD COLUMN IF NOT EXISTS entry_type VARCHAR(30)
                     ''')
                     print("✅ Database migration: ensured entry_type column exists")
+                except Exception as e:
+                    print(f"Database migration info: {e}")  # May already exist
+                
+                # Fix numeric field overflow by using DECIMAL(30,15) for massive prices with many decimal places
+                try:
+                    await conn.execute('''
+                        ALTER TABLE active_trades 
+                        ALTER COLUMN entry_price TYPE DECIMAL(30,15),
+                        ALTER COLUMN tp1_price TYPE DECIMAL(30,15),
+                        ALTER COLUMN tp2_price TYPE DECIMAL(30,15),
+                        ALTER COLUMN tp3_price TYPE DECIMAL(30,15),
+                        ALTER COLUMN sl_price TYPE DECIMAL(30,15),
+                        ALTER COLUMN discord_entry TYPE DECIMAL(30,15),
+                        ALTER COLUMN discord_tp1 TYPE DECIMAL(30,15),
+                        ALTER COLUMN discord_tp2 TYPE DECIMAL(30,15),
+                        ALTER COLUMN discord_tp3 TYPE DECIMAL(30,15),
+                        ALTER COLUMN discord_sl TYPE DECIMAL(30,15),
+                        ALTER COLUMN live_entry TYPE DECIMAL(30,15)
+                    ''')
+                    print("✅ Database migration: increased precision to DECIMAL(30,15) for any API decimal precision")
                 except Exception as e:
                     print(f"Database migration info: {e}")  # May already exist
 
