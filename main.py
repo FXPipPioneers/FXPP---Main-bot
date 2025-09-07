@@ -3423,42 +3423,6 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
         'entry': format_price(entry_price)
     }
 
-    def calculate_live_tracking_levels(self, live_price: float, pair: str, action: str):
-        """Calculate TP and SL levels based on live price for backend tracking"""
-        if pair in PAIR_CONFIG:
-            pip_value = PAIR_CONFIG[pair]['pip_value']
-        else:
-            # Default values for unknown pairs
-            pip_value = 0.0001
-
-        # Calculate pip amounts (20, 40, 70, 50 as specified by user)
-        tp1_pips = 20 * pip_value
-        tp2_pips = 40 * pip_value  
-        tp3_pips = 70 * pip_value
-        sl_pips = 50 * pip_value
-
-        # Determine direction based on action
-        is_buy = action.upper() == "BUY"
-
-        if is_buy:
-            tp1 = live_price + tp1_pips
-            tp2 = live_price + tp2_pips
-            tp3 = live_price + tp3_pips
-            sl = live_price - sl_pips
-        else:  # SELL
-            tp1 = live_price - tp1_pips
-            tp2 = live_price - tp2_pips
-            tp3 = live_price - tp3_pips
-            sl = live_price + sl_pips
-
-        return {
-            'entry': live_price,
-            'tp1': tp1,
-            'tp2': tp2,
-            'tp3': tp3,
-            'sl': sl
-        }
-
 
 def get_remaining_time_display(member_id: str) -> str:
     """Get formatted remaining time display for a member"""
@@ -3586,6 +3550,42 @@ def get_remaining_time_display(member_id: str) -> str:
             print(f"❌ Invalid BOT_OWNER_USER_ID format: {BOT_OWNER_USER_ID}")
         except Exception as e:
             print(f"❌ Error setting up owner permissions: {e}")
+
+    def calculate_live_tracking_levels(self, live_price: float, pair: str, action: str):
+        """Calculate TP and SL levels based on live price for backend tracking"""
+        if pair in PAIR_CONFIG:
+            pip_value = PAIR_CONFIG[pair]['pip_value']
+        else:
+            # Default values for unknown pairs
+            pip_value = 0.0001
+
+        # Calculate pip amounts (20, 40, 70, 50 as specified by user)
+        tp1_pips = 20 * pip_value
+        tp2_pips = 40 * pip_value  
+        tp3_pips = 70 * pip_value
+        sl_pips = 50 * pip_value
+
+        # Determine direction based on action
+        is_buy = action.upper() == "BUY"
+
+        if is_buy:
+            tp1 = live_price + tp1_pips
+            tp2 = live_price + tp2_pips
+            tp3 = live_price + tp3_pips
+            sl = live_price - sl_pips
+        else:  # SELL
+            tp1 = live_price - tp1_pips
+            tp2 = live_price - tp2_pips
+            tp3 = live_price - tp3_pips
+            sl = live_price + sl_pips
+
+        return {
+            'entry': live_price,
+            'tp1': tp1,
+            'tp2': tp2,
+            'tp3': tp3,
+            'sl': sl
+        }
 
 
 # Owner permission check function
