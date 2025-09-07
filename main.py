@@ -2116,22 +2116,62 @@ class TradingBot(commands.Bot):
                     params["base"] = pair_clean[:3]
                     params["symbols"] = pair_clean[3:]
 
+                # Debug the API call
+                await self.debug_to_channel("API DEBUG", 
+                    f"🔍 CURRENCYBEACON API CALL:\n" +
+                    f"URL: {url}\n" +
+                    f"Params: {params}\n" +
+                    f"Pair: {pair_clean}")
+
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        await self.debug_to_channel("API DEBUG", 
+                            f"🔍 CURRENCYBEACON RESPONSE:\n" +
+                            f"Status: {response.status}\n" +
+                            f"Headers: {dict(response.headers)}")
+                        
                         if response.status == 200:
                             data = await response.json()
+                            await self.debug_to_channel("API DEBUG", 
+                                f"🔍 CURRENCYBEACON DATA:\n" +
+                                f"Raw data: {str(data)[:500]}")
+                            
                             if "response" in data and "rates" in data["response"]:
                                 rates = data["response"]["rates"]
+                                await self.debug_to_channel("API DEBUG", 
+                                    f"🔍 CURRENCYBEACON RATES:\n" +
+                                    f"Available rates: {list(rates.keys())}\n" +
+                                    f"Looking for: {pair_clean[3:] if len(pair_clean) == 6 else 'XAU'}")
+                                
                                 if pair_clean == "XAUUSD" and "XAU" in rates:
-                                    return 1.0 / float(rates["XAU"])
+                                    price = 1.0 / float(rates["XAU"])
+                                    await self.debug_to_channel("API DEBUG", 
+                                        f"✅ CURRENCYBEACON SUCCESS (XAUUSD): {price}", "✅")
+                                    return price
                                 else:
                                     target_currency = pair_clean[3:]
                                     if target_currency in rates:
-                                        return float(rates[target_currency])
+                                        price = float(rates[target_currency])
+                                        await self.debug_to_channel("API DEBUG", 
+                                            f"✅ CURRENCYBEACON SUCCESS ({pair_clean}): {price}", "✅")
+                                        return price
+                                    else:
+                                        await self.debug_to_channel("API DEBUG", 
+                                            f"❌ CURRENCYBEACON: Target currency '{target_currency}' not found in rates", "❌")
+                            else:
+                                await self.debug_to_channel("API DEBUG", 
+                                    f"❌ CURRENCYBEACON: Missing 'response' or 'rates' in data structure", "❌")
                         elif response.status == 429:
+                            await self.debug_to_channel("API DEBUG", 
+                                f"❌ CURRENCYBEACON: Rate limit reached (429)", "❌")
                             await self.log_api_limit_warning("CurrencyBeacon", "Monthly limit reached - switching to backup API")
                         elif response.status == 403:
+                            await self.debug_to_channel("API DEBUG", 
+                                f"❌ CURRENCYBEACON: Access forbidden (403) - Invalid API key", "❌")
                             await self.log_api_limit_warning("CurrencyBeacon", "API key invalid or expired")
+                        else:
+                            await self.debug_to_channel("API DEBUG", 
+                                f"❌ CURRENCYBEACON: HTTP {response.status}", "❌")
 
             # === 2. EXCHANGERATE-API (Priority #2) ===
             elif api_name == "exchangerate_api":
