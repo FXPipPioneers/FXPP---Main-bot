@@ -742,6 +742,23 @@ class TradingBot(commands.Bot):
             trades_to_remove = []
             for message_id, trade_data in list(active_trades.items()):
                 try:
+                    # First, check if the original message still exists
+                    message_deleted = await self.check_message_deleted(message_id, trade_data.get("channel_id"))
+                    if message_deleted:
+                        print(f"📝 Original message deleted for {trade_data['pair']} - removing from tracking")
+                        trades_to_remove.append(message_id)
+                        continue
+
+                    # Check if this is a limit order waiting for entry
+                    entry_type = trade_data.get("entry_type", "").lower()
+                    status = trade_data.get("status", "active")
+                    
+                    if "limit" in entry_type and status == "pending_entry":
+                        # Check if limit entry has been hit
+                        entry_hit = await self.check_limit_entry_hit(message_id, trade_data)
+                        if not entry_hit:
+                            continue  # Still waiting for entry, don't check TP/SL yet
+
                     # Check if price levels have been hit
                     level_hit = await self.check_price_levels(message_id, trade_data)
                     if level_hit:
@@ -2744,6 +2761,24 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
+
+    async def check_message_deleted(self, message_id: str, channel_id: int) -> bool:
+        """Check if the original trade signal message has been deleted"""
+        try:
+            channel = self.get_channel(channel_id)
+            if not channel:
+                return True  # Channel not found, treat as deleted
+                
+            message = await channel.fetch_message(int(message_id))
+            return False  # Message still exists
+            
+        except discord.NotFound:
+            return True  # Message was deleted
+        except discord.Forbidden:
+            return False  # No permission, but message exists
+        except Exception as e:
+            print(f"Error checking message deletion: {e}")
+            return False  # Assume exists on error to avoid false removal
 
     async def check_limit_entry_hit(self, message_id: str, trade_data: Dict) -> bool:
         """Check if limit entry has been hit and convert to active tracking"""
@@ -5830,50 +5865,78 @@ async def sl_tp_scraper_command(interaction: discord.Interaction, start_date: st
                     signal_data["channel_id"] = message.channel.id
                     trade_signals.append(signal_data)
         
-        # Get current status of each signal from database
+        # Analyze replies to each trade signal to detect TP/SL hits
         closed_trades = 0
         open_trades = 0
         tp1_hits = 0
         tp2_hits = 0
         tp3_hits = 0
         sl_hits = 0
+        breakeven_hits = 0
         
-        if bot.db_pool:
-            async with bot.db_pool.acquire() as conn:
-                for signal in trade_signals:
-                    message_id = signal["message_id"]
+        for signal in trade_signals:
+            try:
+                # Get the original message
+                original_message = await target_channel.fetch_message(int(signal["message_id"]))
+                
+                # Find all replies to this message
+                replies = []
+                async for reply in target_channel.history(limit=None, after=original_message.created_at):
+                    if (hasattr(reply, 'reference') and reply.reference and 
+                        reply.reference.message_id == original_message.id):
+                        replies.append(reply)
+                
+                # Analyze replies for TP/SL hits
+                signal_tp1_hit = False
+                signal_tp2_hit = False
+                signal_tp3_hit = False
+                signal_sl_hit = False
+                signal_breakeven_hit = False
+                
+                for reply in replies:
+                    content_lower = reply.content.lower()
                     
-                    # Get trade status from database
-                    trade_record = await conn.fetchrow(
-                        "SELECT status, tp_hits FROM active_trades WHERE message_id = $1", 
-                        message_id
-                    )
+                    # Check for TP hits (be more specific to avoid false positives)
+                    if ('tp1' in content_lower and 'hit' in content_lower) or ('tp1 has been hit' in content_lower):
+                        signal_tp1_hit = True
+                    if ('tp2' in content_lower and 'hit' in content_lower) or ('tp2 has been hit' in content_lower):
+                        signal_tp2_hit = True
+                    if ('tp3' in content_lower and 'hit' in content_lower) or ('tp3 has been hit' in content_lower):
+                        signal_tp3_hit = True
                     
-                    if trade_record:
-                        status = trade_record['status']
-                        tp_hits_list = trade_record['tp_hits'] or []
-                        
-                        # Check if trade is closed
-                        if 'closed' in status.lower():
-                            closed_trades += 1
-                        else:
-                            open_trades += 1
-                        
-                        # Count TP and SL hits
-                        if 'tp1' in tp_hits_list:
-                            tp1_hits += 1
-                        if 'tp2' in tp_hits_list:
-                            tp2_hits += 1
-                        if 'tp3' in tp_hits_list:
-                            tp3_hits += 1
-                        if 'sl' in status.lower():
-                            sl_hits += 1
-                    else:
-                        # Trade not in database, consider it open
-                        open_trades += 1
-        else:
-            # No database, all trades considered open
-            open_trades = len(trade_signals)
+                    # Check for SL hits
+                    if ('sl' in content_lower and 'hit' in content_lower) or ('stop loss' in content_lower and 'hit' in content_lower):
+                        signal_sl_hit = True
+                    
+                    # Check for breakeven scenarios
+                    if ('breakeven' in content_lower) or ('tp2 has been hit & price has reversed to breakeven' in content_lower):
+                        signal_breakeven_hit = True
+                
+                # Count the hits
+                if signal_tp1_hit:
+                    tp1_hits += 1
+                if signal_tp2_hit:
+                    tp2_hits += 1
+                if signal_tp3_hit:
+                    tp3_hits += 1
+                if signal_sl_hit:
+                    sl_hits += 1
+                if signal_breakeven_hit:
+                    breakeven_hits += 1
+                
+                # Determine if trade is closed
+                if signal_tp3_hit or signal_sl_hit or signal_breakeven_hit:
+                    closed_trades += 1
+                else:
+                    open_trades += 1
+                    
+            except discord.NotFound:
+                # Original message deleted, consider it open
+                open_trades += 1
+            except Exception as e:
+                print(f"Error analyzing signal {signal['message_id']}: {e}")
+                # On error, consider it open
+                open_trades += 1
         
         # Calculate winrate: (total TP1 hits / total signals) * 100
         total_signals = len(trade_signals)
@@ -5904,7 +5967,8 @@ async def sl_tp_scraper_command(interaction: discord.Interaction, start_date: st
             value=f"**TP1 Hits:** {tp1_hits}\n" +
                   f"**TP2 Hits:** {tp2_hits}\n" +
                   f"**TP3 Hits:** {tp3_hits}\n" +
-                  f"**SL Hits:** {sl_hits}",
+                  f"**SL Hits:** {sl_hits}\n" +
+                  f"**Breakeven:** {breakeven_hits}",
             inline=True
         )
         
