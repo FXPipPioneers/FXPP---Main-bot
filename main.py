@@ -501,6 +501,16 @@ class TradingBot(commands.Bot):
 
                             if historical_price:
                                 # Calculate tracking levels based on historical price
+                                print(f"🔍 DEBUG (recover_missed_signals) - Object type: {type(self)}")
+                                print(f"🔍 DEBUG (recover_missed_signals) - Object class: {self.__class__.__name__}")
+                                has_method = hasattr(self, 'calculate_live_tracking_levels')
+                                print(f"🔍 DEBUG (recover_missed_signals) - Has method: {has_method}")
+                                if has_method:
+                                    print(f"🔍 DEBUG (recover_missed_signals) - Method exists, about to call...")
+                                else:
+                                    calc_methods = [attr for attr in dir(self) if attr.startswith('calculate')]
+                                    print(f"🔍 DEBUG (recover_missed_signals) - Available 'calculate' methods: {calc_methods}")
+                                
                                 live_levels = self.calculate_live_tracking_levels(
                                     historical_price, trade_data["pair"], trade_data["action"]
                                 )
@@ -1544,6 +1554,49 @@ class TradingBot(commands.Bot):
                         
                         # Calculate live-price-based TP/SL levels for tracking
                         await self.debug_to_channel("5. LEVEL CALCULATION", "Calculating live tracking levels...")
+                        
+                        # DEBUG: Add detailed object inspection
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"🔍 DEBUG - Object type: {type(self)}")
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"🔍 DEBUG - Object class: {self.__class__.__name__}")
+                        
+                        # Check if method exists
+                        has_method = hasattr(self, 'calculate_live_tracking_levels')
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"🔍 DEBUG - Has method: {has_method}")
+                        
+                        # Check class MRO and method sources
+                        mro_classes = [cls.__name__ for cls in self.__class__.__mro__]
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"🔍 DEBUG - Class MRO: {mro_classes}")
+                        
+                        # Check if method is in __dict__ of our class
+                        in_class_dict = 'calculate_live_tracking_levels' in self.__class__.__dict__
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"🔍 DEBUG - Method in class __dict__: {in_class_dict}")
+                        
+                        if has_method:
+                            method_obj = getattr(self, 'calculate_live_tracking_levels')
+                            method_type = type(method_obj)
+                            await self.debug_to_channel("5. LEVEL CALCULATION", 
+                                f"🔍 DEBUG - Method type: {method_type}")
+                            await self.debug_to_channel("5. LEVEL CALCULATION", 
+                                f"🔍 DEBUG - Method object: {method_obj}")
+                        else:
+                            # List available methods that start with 'calculate'
+                            calc_methods = [attr for attr in dir(self) if attr.startswith('calculate')]
+                            await self.debug_to_channel("5. LEVEL CALCULATION", 
+                                f"🔍 DEBUG - Available 'calculate' methods: {calc_methods}")
+                            
+                            # List all methods to see what's available
+                            all_methods = [attr for attr in dir(self) if not attr.startswith('_') and callable(getattr(self, attr, None))]
+                            await self.debug_to_channel("5. LEVEL CALCULATION", 
+                                f"🔍 DEBUG - First 20 available methods: {all_methods[:20]}")
+                        
+                        await self.debug_to_channel("5. LEVEL CALCULATION", 
+                            f"🔍 DEBUG - About to call method with params: live_price={live_price}, pair={trade_data['pair']}, action={trade_data['action']}")
+                        
                         live_levels = self.calculate_live_tracking_levels(
                             live_price, trade_data["pair"], trade_data["action"]
                         )
@@ -1598,10 +1651,30 @@ class TradingBot(commands.Bot):
                     await self.debug_to_channel("2. PARSING SIGNAL", 
                         "❌ Failed to parse signal - invalid format or missing data", "❌")
             except Exception as e:
+                import traceback
+                full_traceback = traceback.format_exc()
+                
                 await self.debug_to_channel("ERROR", 
                     f"❌ Exception during signal processing: {str(e)}\n" +
                     f"Error type: {type(e).__name__}", "❌")
+                
+                # Add detailed traceback debugging
+                await self.debug_to_channel("ERROR", 
+                    f"🔍 FULL TRACEBACK:\n```\n{full_traceback}\n```")
+                
+                # Additional object debugging at error time
+                await self.debug_to_channel("ERROR", 
+                    f"🔍 ERROR DEBUG - Object type: {type(self)}")
+                await self.debug_to_channel("ERROR", 
+                    f"🔍 ERROR DEBUG - Object class: {self.__class__.__name__}")
+                
+                # Check method availability at error time
+                has_method = hasattr(self, 'calculate_live_tracking_levels')
+                await self.debug_to_channel("ERROR", 
+                    f"🔍 ERROR DEBUG - Has method at error time: {has_method}")
+                
                 print(f"❌ Error processing signal: {str(e)}")
+                print(f"🔍 Full traceback: {full_traceback}")
                 await self.log_to_discord(f"❌ Error processing signal: {str(e)}")
 
         # Process message for level system
