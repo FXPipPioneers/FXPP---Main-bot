@@ -1585,6 +1585,12 @@ class TradingBot(commands.Bot):
             str(message.channel.id) != PRICE_TRACKING_CONFIG["excluded_channel_id"] and
             (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot) and
             PRICE_TRACKING_CONFIG["signal_keyword"] in message.content):
+            
+            # Skip tracking for US100 and GER40 as per user requirements
+            if "US100" in message.content.upper() or "GER40" in message.content.upper():
+                await self.debug_to_channel("SIGNAL SKIPPED", 
+                    f"Skipping signal tracking for US100/GER40 as requested by user", "⏭️")
+                return
 
             await self.debug_to_channel("1. SIGNAL DETECTED", 
                 f"Message from: {message.author.name} ({message.author.id})\n" +
@@ -2522,50 +2528,51 @@ class TradingBot(commands.Bot):
                         break
 
             # Extract entry price from "Entry Price: $3473.50" (handles $ symbol)
-            entry_match = re.search(r'Entry Price:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+            # Enhanced pattern for BTCUSD and other high-value pairs
+            entry_match = re.search(r'Entry Price:\s*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
             if entry_match:
                 trade_data["entry"] = float(entry_match.group(1))
             else:
-                # Fallback to old format "Entry: price"
-                entry_match = re.search(r'Entry[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                # Fallback to old format "Entry: price" with improved regex
+                entry_match = re.search(r'Entry[:\s]*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
                 if entry_match:
                     trade_data["entry"] = float(entry_match.group(1))
 
-            # Extract Take Profit levels
-            tp1_match = re.search(r'Take Profit 1:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+            # Extract Take Profit levels with enhanced patterns for all pairs including BTCUSD
+            tp1_match = re.search(r'Take Profit 1:\s*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
             if tp1_match:
                 trade_data["tp1"] = float(tp1_match.group(1))
             else:
-                # Fallback to old format "TP1: price"
-                tp1_match = re.search(r'TP1[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                # Fallback to old format "TP1: price" with improved regex
+                tp1_match = re.search(r'TP1[:\s]*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
                 if tp1_match:
                     trade_data["tp1"] = float(tp1_match.group(1))
 
-            tp2_match = re.search(r'Take Profit 2:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+            tp2_match = re.search(r'Take Profit 2:\s*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
             if tp2_match:
                 trade_data["tp2"] = float(tp2_match.group(1))
             else:
-                # Fallback to old format "TP2: price"
-                tp2_match = re.search(r'TP2[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                # Fallback to old format "TP2: price" with improved regex
+                tp2_match = re.search(r'TP2[:\s]*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
                 if tp2_match:
                     trade_data["tp2"] = float(tp2_match.group(1))
 
-            tp3_match = re.search(r'Take Profit 3:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+            tp3_match = re.search(r'Take Profit 3:\s*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
             if tp3_match:
                 trade_data["tp3"] = float(tp3_match.group(1))
             else:
-                # Fallback to old format "TP3: price"
-                tp3_match = re.search(r'TP3[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                # Fallback to old format "TP3: price" with improved regex
+                tp3_match = re.search(r'TP3[:\s]*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
                 if tp3_match:
                     trade_data["tp3"] = float(tp3_match.group(1))
 
-            # Extract Stop Loss from "Stop Loss: $3478.50"
-            sl_match = re.search(r'Stop Loss:\s*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+            # Extract Stop Loss from "Stop Loss: $3478.50" with enhanced pattern
+            sl_match = re.search(r'Stop Loss:\s*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
             if sl_match:
                 trade_data["sl"] = float(sl_match.group(1))
             else:
-                # Fallback to old format "SL: price"
-                sl_match = re.search(r'SL[:\s]*\$?([0-9]+\.?[0-9]*)', content, re.IGNORECASE)
+                # Fallback to old format "SL: price" with improved regex
+                sl_match = re.search(r'SL[:\s]*\$?([0-9]+(?:\.[0-9]+)?)', content, re.IGNORECASE)
                 if sl_match:
                     trade_data["sl"] = float(sl_match.group(1))
 
@@ -2573,6 +2580,11 @@ class TradingBot(commands.Bot):
             print(f"🔍 Parsing signal content: {content[:100]}...")
             print(f"   Extracted - Pair: {trade_data['pair']}, Action: {trade_data['action']}")
             print(f"   Extracted - Entry: {trade_data['entry']}, TP1: {trade_data['tp1']}, TP2: {trade_data['tp2']}, TP3: {trade_data['tp3']}, SL: {trade_data['sl']}")
+            
+            # Special handling for BTCUSD to improve parsing reliability
+            if trade_data['pair'] == 'BTCUSD':
+                print(f"🔍 BTCUSD Special Debug - Raw content: {content}")
+                print(f"🔍 BTCUSD Special Debug - Split lines: {content.split(chr(10))}")
 
             # Validate required fields
             if all([trade_data["pair"], trade_data["action"], trade_data["entry"], 
@@ -5523,34 +5535,7 @@ async def invite_tracking_command(interaction: discord.Interaction, action: str,
 
 
 # ===== PRICE TRACKING COMMANDS =====
-
-@bot.tree.command(name="pricetracking", description="[OWNER ONLY] Toggle live price tracking system on/off")
-@app_commands.describe(enabled="Enable or disable the price tracking system")
-async def toggle_price_tracking(interaction: discord.Interaction, enabled: bool):
-    """Toggle price tracking system"""
-    if not await owner_check(interaction):
-        return
-
-    PRICE_TRACKING_CONFIG["enabled"] = enabled
-    status = "enabled" if enabled else "disabled"
-
-    embed = discord.Embed(
-        title="🔄 Price Tracking System",
-        description=f"Live price tracking has been **{status}**",
-        color=discord.Color.green() if enabled else discord.Color.red()
-    )
-
-    if enabled:
-        embed.add_field(
-            name="📊 Configuration",
-            value=f"• **Monitoring**: Signals containing '{PRICE_TRACKING_CONFIG['signal_keyword']}'\n"
-                  f"• **From**: Owner and bot messages only\n"
-                  f"• **Excluding**: Channel ID {PRICE_TRACKING_CONFIG['excluded_channel_id']}\n"
-                  f"• **Check Interval**: {PRICE_TRACKING_CONFIG['check_interval']} seconds (3m 45s)",
-            inline=False
-        )
-
-    await interaction.response.send_message(embed=embed)
+# Price tracking is now permanently enabled - no toggle command needed
 
 # ===== ACTIVE TRADES COMMAND GROUP =====
 active_trades_group = app_commands.Group(name="activetrades", description="[OWNER ONLY] Manage tracked trading signals")
@@ -5573,10 +5558,32 @@ async def active_trades_view(interaction: discord.Interaction):
     # Get active trades from database for 24/7 persistence
     active_trades = await bot.get_active_trades_from_db()
     
+    # Check for deleted messages and remove them immediately (don't wait for 5min interval)
+    trades_to_remove = []
+    if active_trades:
+        for message_id, trade_data in list(active_trades.items()):
+            try:
+                # Check if the original message still exists
+                message_deleted = await bot.check_message_deleted(message_id, trade_data.get("channel_id"))
+                if message_deleted:
+                    print(f"📝 [/activetrades] Original message deleted for {trade_data['pair']} - removing from tracking")
+                    trades_to_remove.append(message_id)
+            except Exception as e:
+                print(f"Error checking message {message_id}: {e}")
+                trades_to_remove.append(message_id)
+        
+        # Remove deleted trades from database immediately
+        for message_id in trades_to_remove:
+            await bot.remove_trade_from_db(message_id)
+            if message_id in active_trades:
+                del active_trades[message_id]
+    
     # Send debugging to Discord channel
     debug_channel = bot.get_channel(1414220633029611582)
     if debug_channel:
-        await debug_channel.send(f"🔍 DEBUG (/activetrades view): Found {len(active_trades)} active trades")
+        await debug_channel.send(f"🔍 DEBUG (/activetrades view): Found {len(active_trades)} active trades (after deletion check)")
+        if trades_to_remove:
+            await debug_channel.send(f"🗑️ DEBUG (/activetrades view): Removed {len(trades_to_remove)} deleted signals")
         await debug_channel.send(f"🔍 DEBUG (/activetrades view): Active trades keys: {list(active_trades.keys())}")
 
     if not active_trades:
@@ -5808,196 +5815,14 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
         )
         await interaction.followup.send(embed=embed)
 
-@bot.tree.command(name="sl-tpscraper", description="[OWNER ONLY] Analyze trade signals and performance within a date range")
-@app_commands.describe(
-    start_date="Start date (format: YYYY-MM-DD, e.g., 2025-09-01)",
-    end_date="End date (format: YYYY-MM-DD, e.g., 2025-09-09)"
-)
-async def sl_tp_scraper_command(interaction: discord.Interaction, start_date: str, end_date: str):
-    """Analyze trading signals and performance within specified date range"""
-    if not await owner_check(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    try:
-        # Parse and validate dates
-        from datetime import datetime
-        import re
-        
-        # Validate date format
-        date_pattern = r'^\d{4}-\d{2}-\d{2}$'
-        if not re.match(date_pattern, start_date) or not re.match(date_pattern, end_date):
-            await interaction.followup.send("❌ Invalid date format. Use YYYY-MM-DD (e.g., 2025-09-01)", ephemeral=True)
-            return
-        
-        start_datetime = datetime.strptime(start_date, '%Y-%m-%d')
-        end_datetime = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
-        
-        if start_datetime > end_datetime:
-            await interaction.followup.send("❌ Start date must be before or equal to end date", ephemeral=True)
-            return
-        
-        # Get the target channel
-        target_channel_id = 1384668129036075109
-        target_channel = bot.get_channel(target_channel_id)
-        
-        if not target_channel:
-            await interaction.followup.send("❌ Target channel not found", ephemeral=True)
-            return
-        
-        # Fetch messages from the channel within date range
-        messages = []
-        trade_signals = []
-        
-        async for message in target_channel.history(limit=None, after=start_datetime, before=end_datetime):
-            messages.append(message)
-            
-            # Check if message is a trade signal
-            if (PRICE_TRACKING_CONFIG["signal_keyword"] in message.content and 
-                (str(message.author.id) == PRICE_TRACKING_CONFIG["owner_user_id"] or message.author.bot)):
-                
-                # Parse the signal
-                signal_data = bot.parse_signal_message(message.content)
-                if signal_data:
-                    signal_data["message_id"] = str(message.id)
-                    signal_data["timestamp"] = message.created_at
-                    signal_data["channel_id"] = message.channel.id
-                    trade_signals.append(signal_data)
-        
-        # Analyze replies to each trade signal to detect TP/SL hits
-        closed_trades = 0
-        open_trades = 0
-        tp1_hits = 0
-        tp2_hits = 0
-        tp3_hits = 0
-        sl_hits = 0
-        breakeven_hits = 0
-        
-        for signal in trade_signals:
-            try:
-                # Get the original message
-                original_message = await target_channel.fetch_message(int(signal["message_id"]))
-                
-                # Find all replies to this message
-                replies = []
-                async for reply in target_channel.history(limit=None, after=original_message.created_at):
-                    if (hasattr(reply, 'reference') and reply.reference and 
-                        reply.reference.message_id == original_message.id):
-                        replies.append(reply)
-                
-                # Analyze replies for TP/SL hits
-                signal_tp1_hit = False
-                signal_tp2_hit = False
-                signal_tp3_hit = False
-                signal_sl_hit = False
-                signal_breakeven_hit = False
-                
-                for reply in replies:
-                    content_lower = reply.content.lower()
-                    
-                    # Check for TP hits (be more specific to avoid false positives)
-                    if ('tp1' in content_lower and 'hit' in content_lower) or ('tp1 has been hit' in content_lower):
-                        signal_tp1_hit = True
-                    if ('tp2' in content_lower and 'hit' in content_lower) or ('tp2 has been hit' in content_lower):
-                        signal_tp2_hit = True
-                    if ('tp3' in content_lower and 'hit' in content_lower) or ('tp3 has been hit' in content_lower):
-                        signal_tp3_hit = True
-                    
-                    # Check for SL hits
-                    if ('sl' in content_lower and 'hit' in content_lower) or ('stop loss' in content_lower and 'hit' in content_lower):
-                        signal_sl_hit = True
-                    
-                    # Check for breakeven scenarios
-                    if ('breakeven' in content_lower) or ('tp2 has been hit & price has reversed to breakeven' in content_lower):
-                        signal_breakeven_hit = True
-                
-                # Count the hits
-                if signal_tp1_hit:
-                    tp1_hits += 1
-                if signal_tp2_hit:
-                    tp2_hits += 1
-                if signal_tp3_hit:
-                    tp3_hits += 1
-                if signal_sl_hit:
-                    sl_hits += 1
-                if signal_breakeven_hit:
-                    breakeven_hits += 1
-                
-                # Determine if trade is closed
-                if signal_tp3_hit or signal_sl_hit or signal_breakeven_hit:
-                    closed_trades += 1
-                else:
-                    open_trades += 1
-                    
-            except discord.NotFound:
-                # Original message deleted, consider it open
-                open_trades += 1
-            except Exception as e:
-                print(f"Error analyzing signal {signal['message_id']}: {e}")
-                # On error, consider it open
-                open_trades += 1
-        
-        # Calculate winrate: (total TP1 hits / total signals) * 100
-        total_signals = len(trade_signals)
-        if total_signals > 0:
-            winrate = round((tp1_hits / total_signals) * 100, 1)
-        else:
-            winrate = 0.0
-        
-        # Create results embed
-        embed = discord.Embed(
-            title="📊 SL-TP Scraper Analysis",
-            description=f"**Date Range:** {start_date} to {end_date}",
-            color=discord.Color.blue()
-        )
-        
-        # Overview section
-        embed.add_field(
-            name="📈 Overview",
-            value=f"**Total Trade Signals:** {total_signals}\n" +
-                  f"**Closed Trades:** {closed_trades}\n" +
-                  f"**Open Trades:** {open_trades}",
-            inline=True
-        )
-        
-        # Performance section
-        embed.add_field(
-            name="🎯 Performance",
-            value=f"**TP1 Hits:** {tp1_hits}\n" +
-                  f"**TP2 Hits:** {tp2_hits}\n" +
-                  f"**TP3 Hits:** {tp3_hits}\n" +
-                  f"**SL Hits:** {sl_hits}\n" +
-                  f"**Breakeven:** {breakeven_hits}",
-            inline=True
-        )
-        
-        # Winrate section
-        embed.add_field(
-            name="📊 Win Rate",
-            value=f"**{winrate}%**\n" +
-                  f"*(TP1 hits / total signals)*",
-            inline=True
-        )
-        
-        # Additional info
-        embed.add_field(
-            name="ℹ️ Analysis Details",
-            value=f"• Scanned **{len(messages)}** total messages\n" +
-                  f"• Found **{total_signals}** trade signals\n" +
-                  f"• Channel: <#{target_channel_id}>",
-            inline=False
-        )
-        
-        embed.set_footer(text="SL-TP Scraper • Trade Analysis Complete")
-        
-        await interaction.followup.send(embed=embed)
-        
-    except ValueError as e:
-        await interaction.followup.send(f"❌ Date parsing error: {str(e)}", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Analysis error: {str(e)}", ephemeral=True)
-        print(f"SL-TP Scraper error: {e}")
+# SL-TP Scraper command removed as requested by user
+# @bot.tree.command(name="sl-tpscraper", description="[OWNER ONLY] Analyze trade signals and performance within a date range")
+# @app_commands.describe(
+#     start_date="Start date (format: YYYY-MM-DD, e.g., 2025-09-01)",
+#     end_date="End date (format: YYYY-MM-DD, e.g., 2025-09-09)"
+# )
+# async def sl_tp_scraper_command(interaction: discord.Interaction, start_date: str, end_date: str):
+    # Command body removed
 
 # Web server for health checks
 async def web_server():
