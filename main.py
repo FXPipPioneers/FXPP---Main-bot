@@ -706,7 +706,7 @@ class TradingBot(commands.Bot):
             self._last_price_check_time = datetime.now()
         
         time_since_last = (datetime.now() - self._last_price_check_time).total_seconds()
-        time_until_next = max(0, 180 - time_since_last)  # 180 seconds = 3 minutes
+        time_until_next = max(0, 480 - time_since_last)  # 480 seconds = 8 minutes
         
         if time_until_next <= 0:
             return "Due now"
@@ -1261,10 +1261,10 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
-            print("🔄 Price tracking task started - 3 minute intervals (180s)")
+            print("🔄 Price tracking task started - 8 minute intervals (480s)")
             debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
             if debug_channel:
-                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 3 minutes (180s) for better TP/SL detection")
+                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 8 minutes (480s) for thorough TP/SL detection")
 
         # Check for TP/SL hits that occurred while offline
         await self.check_offline_tp_sl_hits()

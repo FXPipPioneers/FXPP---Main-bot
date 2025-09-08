@@ -9,6 +9,8 @@ This project is a professional Discord bot designed for trading signal distribut
 - TP/SL calculations updated: TP1=20 pips, TP2=40 pips, TP3=70 pips, SL=50 pips (changed from TP2=50, TP3=100, SL=70)
 
 ## Recent Changes (September 8, 2025)
+- **INTERACTIVE MENU OVERRIDE SYSTEM**: Replaced complex message ID system with user-friendly dropdown menus for `/tradeoverride` command - now simply select trade from list and choose status (SL hit, TP1-3 hit) with instant SL/TP notifications
+- **PRICE TRACKING INTERVAL OPTIMIZATION**: Updated price tracking from 3-minute to 8-minute intervals for thorough monitoring - optimizes API efficiency while ensuring no TP/SL hits are missed
 - **UPGRADED API LIMITS & NIGHT SHIFT REMOVAL**: Upgraded to paid CurrencyBeacon subscription with 50,000 monthly API calls - removed night shift system (01:00-07:00 API limitations) for true 24/7 price tracking
 - **SEQUENTIAL API CHECKING OPTIMIZATION**: Price tracking now uses APIs sequentially (CurrencyBeacon → ExchangeRate-API → Currencylayer → AbstractAPI) instead of checking all simultaneously, maximizing efficiency with upgraded API limits
 - **ACTIVETRADES PAGINATION FIX**: Completely revamped /activetrades view command with pagination system (3 trades per page) to prevent Discord character limit issues - no more "application did not respond" errors
