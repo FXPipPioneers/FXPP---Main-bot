@@ -741,6 +741,12 @@ class TradingBot(commands.Bot):
 
         # Get active trades from database for 24/7 persistence
         active_trades = await self.get_active_trades_from_db()
+        
+        # Log price tracking activity to debug channel
+        debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
+        if debug_channel and active_trades:
+            await debug_channel.send(f"🔄 **Price Tracking Active** - Checking {len(active_trades)} trades at {amsterdam_now.strftime('%H:%M:%S')}")
+        
         if not active_trades:
             return
 
@@ -773,7 +779,13 @@ class TradingBot(commands.Bot):
                         continue
 
                 except Exception as e:
-                    trades_to_remove.append(message_id)
+                    # Log the error instead of silently removing the trade
+                    print(f"❌ Error checking trade {message_id} for {trade_data.get('pair', 'unknown')}: {str(e)}")
+                    debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
+                    if debug_channel:
+                        await debug_channel.send(f"❌ **Trade Check Error**\nMessage: {message_id[:8]}...\nPair: {trade_data.get('pair', 'unknown')}\nError: {str(e)[:200]}")
+                    # Don't remove the trade, just skip this iteration
+                    continue
 
             # Remove failed trades from database
             for message_id in trades_to_remove:
@@ -1247,6 +1259,10 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
+            print("🔄 Price tracking task started - 5 minute intervals")
+            debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
+            if debug_channel:
+                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 5 minutes")
 
         # Check for TP/SL hits that occurred while offline
         await self.check_offline_tp_sl_hits()
