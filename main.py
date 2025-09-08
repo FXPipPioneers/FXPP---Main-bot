@@ -638,33 +638,31 @@ class TradingBot(commands.Bot):
                         offline_hits_found += 1
                         continue
 
-                    # Check for TP hits while offline (TP3 -> TP2 -> TP1 priority)
+                    # Check for TP hits while offline - detect ALL TPs that have been surpassed
+                    tp_levels_hit = []
+                    
                     if action == "BUY":
+                        if "tp1" not in tp_hits and current_price >= trade_data["tp1"]:
+                            tp_levels_hit.append("tp1")
+                        if "tp2" not in tp_hits and current_price >= trade_data["tp2"]:
+                            tp_levels_hit.append("tp2")
                         if "tp3" not in tp_hits and current_price >= trade_data["tp3"]:
-                            await self.handle_tp_hit(message_id, trade_data, "tp3", offline_hit=True)
-                            offline_hits_found += 1
-                            continue
-                        elif "tp2" not in tp_hits and current_price >= trade_data["tp2"]:
-                            await self.handle_tp_hit(message_id, trade_data, "tp2", offline_hit=True)
-                            offline_hits_found += 1
-                            continue
-                        elif "tp1" not in tp_hits and current_price >= trade_data["tp1"]:
-                            await self.handle_tp_hit(message_id, trade_data, "tp1", offline_hit=True)
-                            offline_hits_found += 1
-                            continue
+                            tp_levels_hit.append("tp3")
                     elif action == "SELL":
+                        if "tp1" not in tp_hits and current_price <= trade_data["tp1"]:
+                            tp_levels_hit.append("tp1")
+                        if "tp2" not in tp_hits and current_price <= trade_data["tp2"]:
+                            tp_levels_hit.append("tp2")
                         if "tp3" not in tp_hits and current_price <= trade_data["tp3"]:
-                            await self.handle_tp_hit(message_id, trade_data, "tp3", offline_hit=True)
-                            offline_hits_found += 1
-                            continue
-                        elif "tp2" not in tp_hits and current_price <= trade_data["tp2"]:
-                            await self.handle_tp_hit(message_id, trade_data, "tp2", offline_hit=True)
-                            offline_hits_found += 1
-                            continue
-                        elif "tp1" not in tp_hits and current_price <= trade_data["tp1"]:
-                            await self.handle_tp_hit(message_id, trade_data, "tp1", offline_hit=True)
-                            offline_hits_found += 1
-                            continue
+                            tp_levels_hit.append("tp3")
+                    
+                    # Process all TP hits found during offline period
+                    if tp_levels_hit:
+                        for tp_level in ["tp1", "tp2", "tp3"]:
+                            if tp_level in tp_levels_hit:
+                                await self.handle_tp_hit(message_id, trade_data, tp_level, offline_hit=True)
+                                offline_hits_found += 1
+                        continue  # Skip to next trade after processing all TPs
 
                     # Check for breakeven hits if TP2 was already hit
                     if trade_data.get("breakeven_active"):
@@ -708,7 +706,7 @@ class TradingBot(commands.Bot):
             self._last_price_check_time = datetime.now()
         
         time_since_last = (datetime.now() - self._last_price_check_time).total_seconds()
-        time_until_next = max(0, 300 - time_since_last)  # 300 seconds = 5 minutes
+        time_until_next = max(0, 180 - time_since_last)  # 180 seconds = 3 minutes
         
         if time_until_next <= 0:
             return "Due now"
@@ -721,7 +719,7 @@ class TradingBot(commands.Bot):
         else:
             return f"{seconds}s"
 
-    @tasks.loop(seconds=300)  # 5 minute interval for 24/7 monitoring with 50,000 monthly API calls
+    @tasks.loop(seconds=180)  # 3 minute interval for 24/7 monitoring (matches check_interval config)
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - 24/7 monitoring with upgraded API limits"""
         # Record the time of this price check
@@ -742,10 +740,14 @@ class TradingBot(commands.Bot):
         # Get active trades from database for 24/7 persistence
         active_trades = await self.get_active_trades_from_db()
         
-        # Log price tracking activity to debug channel
+        # Log price tracking activity to debug channel (always log, even when no trades)
         debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
-        if debug_channel and active_trades:
-            await debug_channel.send(f"🔄 **Price Tracking Active** - Checking {len(active_trades)} trades at {amsterdam_now.strftime('%H:%M:%S')}")
+        if debug_channel:
+            if active_trades:
+                await debug_channel.send(f"🔄 **Price Tracking Active** - Checking {len(active_trades)} trades at {amsterdam_now.strftime('%H:%M:%S')}")
+            else:
+                # Log even when no active trades to confirm task is running
+                await debug_channel.send(f"🔄 **Price Tracking Running** - No active trades to check at {amsterdam_now.strftime('%H:%M:%S')}")
         
         if not active_trades:
             return
@@ -1259,10 +1261,10 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
-            print("🔄 Price tracking task started - 5 minute intervals")
+            print("🔄 Price tracking task started - 3 minute intervals (180s)")
             debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
             if debug_channel:
-                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 5 minutes")
+                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 3 minutes (180s) for better TP/SL detection")
 
         # Check for TP/SL hits that occurred while offline
         await self.check_offline_tp_sl_hits()
@@ -2731,29 +2733,40 @@ class TradingBot(commands.Bot):
                     await self.handle_sl_hit(message_id, trade_data)
                     return True
 
-                # Check TP levels with trading logic validation
-                tp_hit_level = None
-                if action == "BUY":
-                    if "tp3" not in tp_hits_set and current_price >= trade_data["tp3"]:
-                        tp_hit_level = "tp3"
-                    elif "tp2" not in tp_hits_set and current_price >= trade_data["tp2"]:
-                        tp_hit_level = "tp2"
-                    elif "tp1" not in tp_hits_set and current_price >= trade_data["tp1"]:
-                        tp_hit_level = "tp1"
-                elif action == "SELL":
-                    if "tp3" not in tp_hits_set and current_price <= trade_data["tp3"]:
-                        tp_hit_level = "tp3"
-                    elif "tp2" not in tp_hits_set and current_price <= trade_data["tp2"]:
-                        tp_hit_level = "tp2"
-                    elif "tp1" not in tp_hits_set and current_price <= trade_data["tp1"]:
-                        tp_hit_level = "tp1"
+                # Check TP levels with comprehensive detection - detect ALL TPs that have been hit
+                tp_levels_hit = []
                 
-                if tp_hit_level:
+                if action == "BUY":
+                    # For BUY orders, check if price has reached each TP level
+                    if "tp1" not in tp_hits_set and current_price >= trade_data["tp1"]:
+                        tp_levels_hit.append("tp1")
+                    if "tp2" not in tp_hits_set and current_price >= trade_data["tp2"]:
+                        tp_levels_hit.append("tp2")
+                    if "tp3" not in tp_hits_set and current_price >= trade_data["tp3"]:
+                        tp_levels_hit.append("tp3")
+                elif action == "SELL":
+                    # For SELL orders, check if price has reached each TP level
+                    if "tp1" not in tp_hits_set and current_price <= trade_data["tp1"]:
+                        tp_levels_hit.append("tp1")
+                    if "tp2" not in tp_hits_set and current_price <= trade_data["tp2"]:
+                        tp_levels_hit.append("tp2")
+                    if "tp3" not in tp_hits_set and current_price <= trade_data["tp3"]:
+                        tp_levels_hit.append("tp3")
+                
+                # Process all TP hits found (in order: TP1, TP2, TP3)
+                if tp_levels_hit:
                     # Rule 4: TP cannot hit after SL (this shouldn't happen in real-time, but safety check)
                     # In real-time, if SL was hit, the trade would be closed, so this is just extra safety
                     
-                    # TP hit is valid - process it
-                    await self.handle_tp_hit(message_id, trade_data, tp_hit_level)
+                    # Process all TP hits in the correct order
+                    for tp_level in ["tp1", "tp2", "tp3"]:
+                        if tp_level in tp_levels_hit:
+                            await self.handle_tp_hit(message_id, trade_data, tp_level)
+                            
+                            # If TP3 was hit, trade is completed and will be removed
+                            if tp_level == "tp3":
+                                return True
+                    
                     return True
 
             return False
