@@ -3042,7 +3042,7 @@ class TradingBot(commands.Bot):
                 
         return valid_hits
 
-    async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str, offline_hit: bool = False):
+    async def send_tp_notification(self, message_id: str, trade_data: Dict, tp_level: str, offline_hit: bool = False, manual_override: bool = False):
         """Send TP hit notification with random message selection"""
         import random
 
@@ -3105,7 +3105,7 @@ class TradingBot(commands.Bot):
         except Exception as e:
             print(f"Error sending TP notification: {e}")
 
-    async def send_sl_notification(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
+    async def send_sl_notification(self, message_id: str, trade_data: Dict, offline_hit: bool = False, manual_override: bool = False):
         """Send SL hit notification with random message selection"""
         import random
 
@@ -6024,6 +6024,250 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
             color=discord.Color.red()
         )
         await interaction.followup.send(embed=embed)
+
+class TradeOverrideView(discord.ui.View):
+    """Interactive view for manually overriding trade statuses"""
+    
+    def __init__(self, active_trades):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.active_trades = active_trades
+        self.selected_trade = None
+        
+        # Add trade selection dropdown
+        self.add_item(TradeSelectionDropdown(active_trades))
+        # Add status selection dropdown (initially disabled)
+        status_dropdown = StatusSelectionDropdown()
+        status_dropdown.disabled = True
+        self.add_item(status_dropdown)
+    
+    async def on_timeout(self):
+        # Disable all items when view times out
+        for item in self.children:
+            item.disabled = True
+
+class TradeSelectionDropdown(discord.ui.Select):
+    """Dropdown to select which trade to override"""
+    
+    def __init__(self, active_trades):
+        # Create options for each active trade
+        options = []
+        for message_id, trade_data in list(active_trades.items())[:25]:  # Discord limit of 25 options
+            pair = trade_data["pair"]
+            action = trade_data["action"]
+            tp_hits = trade_data.get("tp_hits", [])
+            tp_status = f" (TP hits: {', '.join([tp.upper() for tp in tp_hits])})" if tp_hits else ""
+            
+            # Truncate message_id for display
+            short_id = message_id[:8] + "..."
+            
+            options.append(discord.SelectOption(
+                label=f"{pair} - {action}{tp_status}",
+                description=f"Message ID: {short_id}",
+                value=message_id
+            ))
+        
+        super().__init__(
+            placeholder="🎯 Select a trade to modify...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        # Store the selected trade
+        self.view.selected_trade = self.values[0]
+        
+        # Enable the status dropdown
+        status_dropdown = self.view.children[1]
+        status_dropdown.disabled = False
+        
+        # Update the message
+        trade_data = self.view.active_trades[self.values[0]]
+        pair = trade_data["pair"]
+        action = trade_data["action"]
+        
+        embed = discord.Embed(
+            title="🔧 Trade Override System",
+            description=f"**Selected Trade:** {pair} - {action}\n\nNow select the status to apply:",
+            color=discord.Color.orange()
+        )
+        
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class StatusSelectionDropdown(discord.ui.Select):
+    """Dropdown to select the status to apply"""
+    
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="SL Hit",
+                description="Mark trade as stopped out (ends trade)",
+                value="sl_hit",
+                emoji="🔴"
+            ),
+            discord.SelectOption(
+                label="TP1 Hit", 
+                description="Mark TP1 as reached",
+                value="tp1_hit",
+                emoji="🟢"
+            ),
+            discord.SelectOption(
+                label="TP2 Hit",
+                description="Mark TP2 as reached (activates breakeven)",
+                value="tp2_hit", 
+                emoji="🟢"
+            ),
+            discord.SelectOption(
+                label="TP3 Hit",
+                description="Mark TP3 as reached (ends trade)",
+                value="tp3_hit",
+                emoji="🚀"
+            )
+        ]
+        
+        super().__init__(
+            placeholder="📊 Select status to apply...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            message_id = self.view.selected_trade
+            trade_data = self.view.active_trades[message_id]
+            pair = trade_data["pair"]
+            action = trade_data["action"]
+            status = self.values[0]
+            
+            # Get current TP hits before modification
+            current_tp_hits = trade_data.get("tp_hits", [])
+            
+            # Process the manual status change
+            if status == "sl_hit":
+                # SL hit - ends the trade
+                trade_data["status"] = "closed (sl hit - manual override)"
+                await bot.remove_trade_from_db(message_id)
+                await bot.send_sl_notification(message_id, trade_data, offline_hit=False, manual_override=True)
+                
+                embed = discord.Embed(
+                    title="✅ SL Hit Applied",
+                    description=f"🔴 **{pair} {action}** signal marked as SL hit\n\n"
+                               f"📝 Trade removed from tracking\n"
+                               f"📢 SL notification sent to community",
+                    color=discord.Color.red()
+                )
+                
+            elif status in ["tp1_hit", "tp2_hit", "tp3_hit"]:
+                tp_level = status.replace("_hit", "")
+                
+                # Check if this TP was already hit
+                if tp_level in current_tp_hits:
+                    embed = discord.Embed(
+                        title="⚠️ TP Already Hit",
+                        description=f"**{pair} {action}** signal already has **{tp_level.upper()}** marked as hit.\n\n"
+                                   f"Current TP hits: {', '.join([tp.upper() for tp in current_tp_hits])}",
+                        color=discord.Color.orange()
+                    )
+                    await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
+                    return
+                
+                # Add the TP to hits
+                trade_data["tp_hits"].append(tp_level)
+                
+                # Apply specific logic for each TP level
+                if tp_level == "tp1":
+                    trade_data["status"] = "active (tp1 hit - manual override)"
+                    await bot.update_trade_in_db(message_id, trade_data)
+                    
+                elif tp_level == "tp2":
+                    # TP2 hit - activate breakeven
+                    trade_data["breakeven_active"] = True
+                    trade_data["status"] = "active (tp2 hit - manual override - breakeven active)"
+                    await bot.update_trade_in_db(message_id, trade_data)
+                    
+                elif tp_level == "tp3":
+                    # TP3 hit - ends the trade
+                    trade_data["status"] = "completed (tp3 hit - manual override)"
+                    await bot.remove_trade_from_db(message_id)
+                
+                # Send TP notification
+                await bot.send_tp_notification(message_id, trade_data, tp_level, offline_hit=False, manual_override=True)
+                
+                # Prepare response embed
+                description = f"🟢 **{pair} {action}** signal marked as **{tp_level.upper()}** hit\n\n"
+                
+                if tp_level == "tp2":
+                    description += "🔄 Breakeven SL now active\n"
+                elif tp_level == "tp3":
+                    description += "📝 Trade completed and removed from tracking\n"
+                
+                description += "📢 TP notification sent to community"
+                
+                embed = discord.Embed(
+                    title=f"✅ {tp_level.upper()} Hit Applied",
+                    description=description,
+                    color=discord.Color.green()
+                )
+            
+            # Disable the view after successful operation
+            for item in self.view.children:
+                item.disabled = True
+                
+            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self.view)
+                
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ Error Processing Override",
+                description=f"Failed to update trade status: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
+            print(f"Trade override error: {e}")
+
+@bot.tree.command(name="tradeoverride", description="[OWNER ONLY] Manually set the status of tracked trading signals using interactive menus")
+async def trade_override_command(interaction: discord.Interaction):
+    """Interactive menu system for manually overriding trade statuses"""
+    if not await owner_check(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        # Get active trades from database
+        active_trades = await bot.get_active_trades_from_db()
+        
+        if not active_trades:
+            embed = discord.Embed(
+                title="📊 Trade Override System",
+                description="❌ **No active trades found**\n\nThere are currently no trading signals being tracked.\nUse `/activetrades view` to confirm.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        
+        # Create initial embed
+        embed = discord.Embed(
+            title="🔧 Trade Override System",
+            description=f"Found **{len(active_trades)}** active trades.\n\nSelect a trade from the dropdown below:",
+            color=discord.Color.blue()
+        )
+        
+        # Create interactive view
+        view = TradeOverrideView(active_trades)
+        
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error Loading Trades",
+            description=f"Failed to load active trades: {str(e)}",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        print(f"Trade override loading error: {e}")
 
 # SL-TP Scraper command removed as requested by user
 # @bot.tree.command(name="sl-tpscraper", description="[OWNER ONLY] Analyze trade signals and performance within a date range")
