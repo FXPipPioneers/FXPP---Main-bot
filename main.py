@@ -702,9 +702,31 @@ class TradingBot(commands.Bot):
             return None
 
 
+    async def get_time_until_next_refresh(self):
+        """Calculate time remaining until next price tracking refresh"""
+        if not hasattr(self, '_last_price_check_time'):
+            self._last_price_check_time = datetime.now()
+        
+        time_since_last = (datetime.now() - self._last_price_check_time).total_seconds()
+        time_until_next = max(0, 300 - time_since_last)  # 300 seconds = 5 minutes
+        
+        if time_until_next <= 0:
+            return "Due now"
+        
+        minutes = int(time_until_next // 60)
+        seconds = int(time_until_next % 60)
+        
+        if minutes > 0:
+            return f"{minutes}m {seconds}s"
+        else:
+            return f"{seconds}s"
+
     @tasks.loop(seconds=300)  # 5 minute interval for 24/7 monitoring with 50,000 monthly API calls
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - 24/7 monitoring with upgraded API limits"""
+        # Record the time of this price check
+        self._last_price_check_time = datetime.now()
+        
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return
         
@@ -5747,9 +5769,12 @@ async def active_trades_view(interaction: discord.Interaction):
     trades_list = list(active_trades.items())
     current_page_trades = trades_list[start_idx:end_idx]
     
+    # Get time until next refresh
+    next_refresh = await bot.get_time_until_next_refresh()
+    
     embed = discord.Embed(
         title="📊 Active Signal Tracking",
-        description=f"Monitoring **{total_trades}** trading signals with live price analysis:\n📄 **Page {page} of {total_pages}** (showing {len(current_page_trades)} signals)",
+        description=f"Monitoring **{total_trades}** trading signals with live price analysis:\n⏰ **Next API refresh in:** {next_refresh}\n📄 **Page {page} of {total_pages}** (showing {len(current_page_trades)} signals)",
         color=discord.Color.green()
     )
 
@@ -5910,8 +5935,12 @@ async def test_price_retrieval(interaction: discord.Interaction, pair: str):
         # Get prices from all APIs
         api_results = await bot.get_all_api_prices(pair_clean)
         
+        # Get time until next refresh
+        next_refresh = await bot.get_time_until_next_refresh()
+        
         embed = discord.Embed(
             title="💰 Price Test",
+            description=f"⏰ **Next API refresh in:** {next_refresh}",
             color=discord.Color.green()
         )
 
