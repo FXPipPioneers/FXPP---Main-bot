@@ -5681,13 +5681,16 @@ async def active_trades_view(interaction: discord.Interaction):
     if not await owner_check(interaction):
         return
 
+    # Respond immediately to prevent timeout
+    await interaction.response.send_message("🔄 Loading active trades...", ephemeral=True)
+
     if not PRICE_TRACKING_CONFIG["enabled"]:
         embed = discord.Embed(
             title="📊 Active Signal Tracking",
             description="❌ Price tracking system is currently disabled",
             color=discord.Color.red()
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.edit_original_response(content="", embed=embed)
         return
 
     # Get active trades from database for 24/7 persistence
@@ -5727,11 +5730,8 @@ async def active_trades_view(interaction: discord.Interaction):
             description="✅ No trading signals being monitored\n\n*Signals are automatically removed when they hit SL or TP3*",
             color=discord.Color.blue()
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.edit_original_response(content="", embed=embed)
         return
-
-    # Respond immediately to avoid timeout
-    await interaction.response.send_message("🔄 Loading active trades...", ephemeral=True)
 
     # Pagination setup - 3 trades per page to avoid Discord character limits
     page = 1  # Always start with page 1
