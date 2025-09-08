@@ -3049,10 +3049,6 @@ class TradingBot(commands.Bot):
                 # Fallback to original message
                 notification = f"@everyone **{tp_level.upper()} HAS BEEN HIT!** 🎯"
 
-            # Add offline hit indication if applicable
-            if offline_hit:
-                notification += "\n⚠️ *This level was hit while the bot was offline - notification sent upon restart*"
-
             await message.reply(notification)
 
         except Exception as e:
@@ -3079,10 +3075,6 @@ class TradingBot(commands.Bot):
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
             notification = random.choice(sl_messages)
 
-            # Add offline hit indication if applicable
-            if offline_hit:
-                notification += "\n⚠️ *This level was hit while the bot was offline - notification sent upon restart*"
-
             await message.reply(notification)
 
         except Exception as e:
@@ -3093,10 +3085,6 @@ class TradingBot(commands.Bot):
         try:
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
             notification = f"@everyone TP2 has been hit & price has reversed to breakeven, so as usual, we're out safe 🫡"
-
-            # Add offline hit indication if applicable
-            if offline_hit:
-                notification += "\n⚠️ *This level was hit while the bot was offline - notification sent upon restart*"
 
             await message.reply(notification)
 
@@ -5688,7 +5676,7 @@ class ActiveTradesView(discord.ui.View):
 active_trades_group = app_commands.Group(name="activetrades", description="[OWNER ONLY] Manage tracked trading signals")
 
 @active_trades_group.command(name="view", description="View detailed status of all tracked trading signals")
-async def active_trades_view(interaction: discord.Interaction, page: int = 1):
+async def active_trades_view(interaction: discord.Interaction):
     """Show active trades with detailed price level analysis"""
     if not await owner_check(interaction):
         return
@@ -5742,18 +5730,14 @@ async def active_trades_view(interaction: discord.Interaction, page: int = 1):
         await interaction.response.send_message(embed=embed)
         return
 
-    await interaction.response.defer()
+    # Respond immediately to avoid timeout
+    await interaction.response.send_message("🔄 Loading active trades...", ephemeral=True)
 
     # Pagination setup - 3 trades per page to avoid Discord character limits
+    page = 1  # Always start with page 1
     trades_per_page = 3
     total_trades = len(active_trades)
     total_pages = (total_trades + trades_per_page - 1) // trades_per_page  # Ceiling division
-    
-    # Validate page number
-    if page < 1:
-        page = 1
-    elif page > total_pages:
-        page = total_pages
     
     # Calculate start and end indices for current page
     start_idx = (page - 1) * trades_per_page
@@ -5822,10 +5806,10 @@ async def active_trades_view(interaction: discord.Interaction, page: int = 1):
     if total_pages > 1:
         view = ActiveTradesView(active_trades, total_pages, page)
         embed.set_footer(text=f"Use the buttons below to navigate pages • Page {page}/{total_pages} • Signals auto-removed when SL/TP3 hit")
-        await interaction.followup.send(embed=embed, view=view)
+        await interaction.edit_original_response(content="", embed=embed, view=view)
     else:
         embed.set_footer(text="Signals automatically removed when SL/TP3 hit or original message deleted")
-        await interaction.followup.send(embed=embed)
+        await interaction.edit_original_response(content="", embed=embed)
 
 # Manual remove command removed - automatic cleanup handles deleted messages
 
