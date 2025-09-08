@@ -8,7 +8,13 @@ This project is a professional Discord bot designed for trading signal distribut
 - Bot owner restricted to Discord ID: 462707111365836801
 - TP/SL calculations updated: TP1=20 pips, TP2=40 pips, TP3=70 pips, SL=50 pips (changed from TP2=50, TP3=100, SL=70)
 
-## Recent Changes (September 7, 2025)
+## Recent Changes (September 8, 2025)
+- **UPGRADED API LIMITS & NIGHT SHIFT REMOVAL**: Upgraded to paid CurrencyBeacon subscription with 50,000 monthly API calls - removed night shift system (01:00-07:00 API limitations) for true 24/7 price tracking
+- **SEQUENTIAL API CHECKING OPTIMIZATION**: Price tracking now uses APIs sequentially (CurrencyBeacon → ExchangeRate-API → Currencylayer → AbstractAPI) instead of checking all simultaneously, maximizing efficiency with upgraded API limits
+- **ACTIVETRADES PAGINATION FIX**: Completely revamped /activetrades view command with pagination system (3 trades per page) to prevent Discord character limit issues - no more "application did not respond" errors
+
+## Previous Changes (September 7, 2025)
+- **SIGNAL RECOVERY DATABASE FIX**: Fixed critical bug where signal recovery system found missed signals but failed to save them to database due to missing guild_id field - recovery system now properly saves recovered signals so they appear in /activetrades
 - **DATABASE NUMERIC FIELD OVERFLOW FIX**: Fixed critical database schema issue preventing large price values from being saved by increasing precision from DECIMAL(12,8) to DECIMAL(30,15) for all price columns - now handles any massive price values with up to 15 decimal places from any API
 - **IMMEDIATE DELETION DETECTION FIX**: Fixed critical issue where manually deleted signals still appeared in /activetrades view - now checks for deleted messages immediately when running /activetrades instead of waiting for 5-minute interval
 - **BTCUSD PARSING FIX**: Enhanced regex patterns for better BTCUSD signal parsing reliability with improved decimal number matching

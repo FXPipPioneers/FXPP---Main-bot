@@ -702,9 +702,9 @@ class TradingBot(commands.Bot):
             return None
 
 
-    @tasks.loop(seconds=300)  # Dynamic interval: 5 min normal, 15 min night pause (01:00-07:00 weekdays)
+    @tasks.loop(seconds=300)  # 5 minute interval for 24/7 monitoring with 50,000 monthly API calls
     async def price_tracking_task(self):
-        """Background task to monitor live prices for active trades - optimized for free API tiers"""
+        """Background task to monitor live prices for active trades - 24/7 monitoring with upgraded API limits"""
         if not PRICE_TRACKING_CONFIG["enabled"]:
             return
         
@@ -713,25 +713,9 @@ class TradingBot(commands.Bot):
         weekday = amsterdam_now.weekday()  # 0=Monday, 6=Sunday
         hour = amsterdam_now.hour
         
-        # Weekend pause: Friday 23:00 to Sunday 23:55
+        # Weekend pause: Friday 23:00 to Sunday 23:55 (markets closed)
         if (weekday == 4 and hour >= 23) or weekday == 5 or (weekday == 6 and hour < 23) or (weekday == 6 and hour == 23 and amsterdam_now.minute < 55):
-            return  # Skip tracking during weekend to conserve API usage
-            
-        # Night pause: 01:00-07:00 Amsterdam time on weekdays (reduced frequency)
-        # During night: Check every 15 minutes instead of every 5 minutes
-        in_night_pause = weekday <= 4 and 1 <= hour < 7  # 01:00-06:59 on weekdays
-        
-        if in_night_pause:
-            # During night pause, only check every 3rd iteration (15 min instead of 5 min)
-            if not hasattr(self, '_night_pause_counter'):
-                self._night_pause_counter = 0
-            self._night_pause_counter += 1
-            
-            if self._night_pause_counter % 3 != 0:
-                return  # Skip this iteration during night pause
-        else:
-            # Reset counter when not in night pause
-            self._night_pause_counter = 0
+            return  # Skip tracking during weekend when markets are closed
 
         # Get active trades from database for 24/7 persistence
         active_trades = await self.get_active_trades_from_db()
@@ -5558,11 +5542,153 @@ async def invite_tracking_command(interaction: discord.Interaction, action: str,
 # ===== PRICE TRACKING COMMANDS =====
 # Price tracking is now permanently enabled - no toggle command needed
 
+# ===== ACTIVE TRADES PAGINATION VIEW =====
+class ActiveTradesView(discord.ui.View):
+    def __init__(self, active_trades_data, total_pages, current_page=1):
+        super().__init__(timeout=300)  # 5 minutes timeout
+        self.active_trades_data = active_trades_data
+        self.total_pages = total_pages
+        self.current_page = current_page
+        self.trades_per_page = 3
+        
+        # Update button states
+        self.update_buttons()
+    
+    def update_buttons(self):
+        # Clear existing buttons
+        self.clear_items()
+        
+        # Previous page button
+        if self.current_page > 1:
+            prev_button = discord.ui.Button(
+                label="◀ Previous", 
+                style=discord.ButtonStyle.secondary,
+                custom_id="prev_page"
+            )
+            prev_button.callback = self.previous_page
+            self.add_item(prev_button)
+        
+        # Page number buttons (show current and adjacent pages)
+        start_page = max(1, self.current_page - 1)
+        end_page = min(self.total_pages, self.current_page + 1)
+        
+        for page_num in range(start_page, end_page + 1):
+            style = discord.ButtonStyle.primary if page_num == self.current_page else discord.ButtonStyle.secondary
+            page_button = discord.ui.Button(
+                label=str(page_num),
+                style=style,
+                custom_id=f"page_{page_num}"
+            )
+            page_button.callback = lambda interaction, p=page_num: self.go_to_page(interaction, p)
+            self.add_item(page_button)
+        
+        # Next page button
+        if self.current_page < self.total_pages:
+            next_button = discord.ui.Button(
+                label="Next ▶", 
+                style=discord.ButtonStyle.secondary,
+                custom_id="next_page"
+            )
+            next_button.callback = self.next_page
+            self.add_item(next_button)
+    
+    async def previous_page(self, interaction: discord.Interaction):
+        if self.current_page > 1:
+            self.current_page -= 1
+            await self.update_message(interaction)
+    
+    async def next_page(self, interaction: discord.Interaction):
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            await self.update_message(interaction)
+    
+    async def go_to_page(self, interaction: discord.Interaction, page_num: int):
+        self.current_page = page_num
+        await self.update_message(interaction)
+    
+    async def update_message(self, interaction: discord.Interaction):
+        embed = await self.create_embed()
+        self.update_buttons()
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def create_embed(self):
+        # Calculate start and end indices for current page
+        start_idx = (self.current_page - 1) * self.trades_per_page
+        end_idx = min(start_idx + self.trades_per_page, len(self.active_trades_data))
+        
+        # Get trades for current page
+        trades_list = list(self.active_trades_data.items())
+        current_page_trades = trades_list[start_idx:end_idx]
+        
+        embed = discord.Embed(
+            title="📊 Active Signal Tracking",
+            description=f"Monitoring **{len(self.active_trades_data)}** trading signals with live price analysis:\n📄 **Page {self.current_page} of {self.total_pages}** (showing {len(current_page_trades)} signals)",
+            color=discord.Color.green()
+        )
+        
+        # Process each trade on current page and get current price status
+        for i, (message_id, trade_data) in enumerate(current_page_trades):
+            try:
+                # Get current live price - try assigned API first, then fallback to others
+                assigned_api = trade_data.get("assigned_api", "currencybeacon")
+                current_price = await bot.get_live_price(trade_data["pair"], specific_api=assigned_api)
+                
+                # If assigned API fails, try fallback rotation
+                if current_price is None:
+                    current_price = await bot.get_live_price(trade_data["pair"], use_all_apis=False)
+
+                if current_price:
+                    # Analyze current position
+                    status_info = await analyze_trade_position(trade_data, current_price)
+                    price_status = f"**Current: ${current_price:.5f}** {status_info['emoji']}\n"
+                    position_text = f"*{status_info['position']}*"
+                else:
+                    price_status = "**Current: Price unavailable**\n"
+                    position_text = "*Unable to determine position*"
+
+                # Build level display
+                levels_display = build_levels_display(trade_data, current_price)
+
+                # TP hits status
+                tp_hits = trade_data.get('tp_hits', [])
+                tp_status = f"**TP Hits:** {', '.join([tp.upper() for tp in tp_hits]) if tp_hits else 'None'}"
+
+                # Breakeven status
+                breakeven_status = ""
+                if trade_data.get("breakeven_active"):
+                    breakeven_status = "\n🔄 **Breakeven SL Active** (TP2 hit)"
+
+                # Time tracking
+                time_status = f"\n⏱️ Message: {message_id[:8]}..."
+
+                embed.add_field(
+                    name=f"📈 {trade_data['pair']} - {trade_data['action']}",
+                    value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{time_status}",
+                    inline=False
+                )
+
+            except Exception as e:
+                # Fallback display if price retrieval fails
+                embed.add_field(
+                    name=f"⚠️ {trade_data['pair']} - {trade_data['action']}",
+                    value=f"**Error getting price data**\nEntry: ${trade_data['entry']}\nStatus: {trade_data.get('status', 'active')}",
+                    inline=False
+                )
+        
+        # Add pagination instructions in footer
+        embed.set_footer(text=f"Use the buttons below to navigate pages • Page {self.current_page}/{self.total_pages} • Signals auto-removed when SL/TP3 hit")
+        return embed
+    
+    async def on_timeout(self):
+        # Disable all buttons when view times out
+        for item in self.children:
+            item.disabled = True
+
 # ===== ACTIVE TRADES COMMAND GROUP =====
 active_trades_group = app_commands.Group(name="activetrades", description="[OWNER ONLY] Manage tracked trading signals")
 
 @active_trades_group.command(name="view", description="View detailed status of all tracked trading signals")
-async def active_trades_view(interaction: discord.Interaction):
+async def active_trades_view(interaction: discord.Interaction, page: int = 1):
     """Show active trades with detailed price level analysis"""
     if not await owner_check(interaction):
         return
@@ -5618,14 +5744,33 @@ async def active_trades_view(interaction: discord.Interaction):
 
     await interaction.response.defer()
 
+    # Pagination setup - 3 trades per page to avoid Discord character limits
+    trades_per_page = 3
+    total_trades = len(active_trades)
+    total_pages = (total_trades + trades_per_page - 1) // trades_per_page  # Ceiling division
+    
+    # Validate page number
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages
+    
+    # Calculate start and end indices for current page
+    start_idx = (page - 1) * trades_per_page
+    end_idx = min(start_idx + trades_per_page, total_trades)
+    
+    # Get trades for current page
+    trades_list = list(active_trades.items())
+    current_page_trades = trades_list[start_idx:end_idx]
+    
     embed = discord.Embed(
         title="📊 Active Signal Tracking",
-        description=f"Monitoring **{len(active_trades)}** trading signals with live price analysis:",
+        description=f"Monitoring **{total_trades}** trading signals with live price analysis:\n📄 **Page {page} of {total_pages}** (showing {len(current_page_trades)} signals)",
         color=discord.Color.green()
     )
 
-    # Process each trade and get current price status
-    for i, (message_id, trade_data) in enumerate(list(active_trades.items())[:8]):  # Limit to 8 for readability
+    # Process each trade on current page and get current price status
+    for i, (message_id, trade_data) in enumerate(current_page_trades):
         try:
             # Get current live price - try assigned API first, then fallback to others
             assigned_api = trade_data.get("assigned_api", "currencybeacon")
@@ -5673,12 +5818,14 @@ async def active_trades_view(interaction: discord.Interaction):
                 inline=False
             )
 
-    if len(active_trades) > 8:
-        embed.set_footer(text=f"Showing 8 of {len(active_trades)} active signals • Auto-removed when SL/TP3 hit or message deleted")
+    # Create interactive view with buttons if multiple pages
+    if total_pages > 1:
+        view = ActiveTradesView(active_trades, total_pages, page)
+        embed.set_footer(text=f"Use the buttons below to navigate pages • Page {page}/{total_pages} • Signals auto-removed when SL/TP3 hit")
+        await interaction.followup.send(embed=embed, view=view)
     else:
         embed.set_footer(text="Signals automatically removed when SL/TP3 hit or original message deleted")
-
-    await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 # Manual remove command removed - automatic cleanup handles deleted messages
 
