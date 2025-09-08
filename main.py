@@ -130,7 +130,7 @@ PRICE_TRACKING_CONFIG = {
     },
     "api_priority_order": ["currencybeacon", "exchangerate_api", "currencylayer", "abstractapi"],
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 180,  # 3 minutes - optimized calculation for 4 APIs and free tier limits
+    "check_interval": 480,  # 8 minutes - ensures nothing is missed while staying efficient
     "api_rotation_index": 0  # for tracking which API failed (for debugging)
 }
 
@@ -719,7 +719,7 @@ class TradingBot(commands.Bot):
         else:
             return f"{seconds}s"
 
-    @tasks.loop(seconds=180)  # 3 minute interval for 24/7 monitoring (matches check_interval config)
+    @tasks.loop(seconds=480)  # 8 minute interval - ensures thorough monitoring
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - 24/7 monitoring with upgraded API limits"""
         # Record the time of this price check
