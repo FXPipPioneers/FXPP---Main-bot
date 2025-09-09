@@ -6152,6 +6152,10 @@ class StatusSelectionDropdown(discord.ui.Select):
                 await bot.remove_trade_from_db(message_id)
                 await bot.send_sl_notification(message_id, trade_data, offline_hit=False, manual_override=True)
                 
+                # Refresh the view's active_trades data to reflect database changes
+                fresh_trades = await bot.get_active_trades_from_db()
+                self.view.active_trades = fresh_trades
+                
                 embed = discord.Embed(
                     title="✅ SL Hit Applied",
                     description=f"🔴 **{pair} {action}** signal marked as SL hit\n\n"
@@ -6183,28 +6187,67 @@ class StatusSelectionDropdown(discord.ui.Select):
                     await bot.update_trade_in_db(message_id, trade_data)
                     
                 elif tp_level == "tp2":
+                    # TP2 hit - first send TP1 if not already hit, then TP2
+                    if "tp1" not in current_tp_hits:
+                        trade_data["tp_hits"].append("tp1")
+                        await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
+                        # Small delay between messages
+                        import asyncio
+                        await asyncio.sleep(2)
+                    
                     # TP2 hit - activate breakeven
                     trade_data["breakeven_active"] = True
                     trade_data["status"] = "active (tp2 hit - manual override - breakeven active)"
                     await bot.update_trade_in_db(message_id, trade_data)
                     
                 elif tp_level == "tp3":
+                    # TP3 hit - first send TP1 and TP2 if not already hit, then TP3
+                    if "tp1" not in current_tp_hits:
+                        trade_data["tp_hits"].append("tp1")
+                        await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
+                        import asyncio
+                        await asyncio.sleep(2)
+                    
+                    if "tp2" not in current_tp_hits:
+                        trade_data["tp_hits"].append("tp2")
+                        trade_data["breakeven_active"] = True
+                        await bot.send_tp_notification(message_id, trade_data, "tp2", offline_hit=False, manual_override=True)
+                        await asyncio.sleep(2)
+                    
                     # TP3 hit - ends the trade
                     trade_data["status"] = "completed (tp3 hit - manual override)"
                     await bot.remove_trade_from_db(message_id)
                 
-                # Send TP notification
+                # Send TP notification for the selected level
                 await bot.send_tp_notification(message_id, trade_data, tp_level, offline_hit=False, manual_override=True)
+                
+                # Refresh the view's active_trades data to reflect database changes
+                fresh_trades = await bot.get_active_trades_from_db()
+                self.view.active_trades = fresh_trades
                 
                 # Prepare response embed
                 description = f"🟢 **{pair} {action}** signal marked as **{tp_level.upper()}** hit\n\n"
                 
                 if tp_level == "tp2":
-                    description += "🔄 Breakeven SL now active\n"
+                    if "tp1" not in [tp for tp in current_tp_hits]:
+                        description += "📢 TP1 and TP2 notifications sent to community\n"
+                    else:
+                        description += "📢 TP2 notification sent to community\n"
+                    description += "🔄 Breakeven SL now active"
                 elif tp_level == "tp3":
-                    description += "📝 Trade completed and removed from tracking\n"
-                
-                description += "📢 TP notification sent to community"
+                    missing_tps = []
+                    if "tp1" not in current_tp_hits:
+                        missing_tps.append("TP1")
+                    if "tp2" not in current_tp_hits:
+                        missing_tps.append("TP2")
+                    
+                    if missing_tps:
+                        description += f"📢 {', '.join(missing_tps)} and TP3 notifications sent to community\n"
+                    else:
+                        description += "📢 TP3 notification sent to community\n"
+                    description += "📝 Trade completed and removed from tracking"
+                else:
+                    description += "📢 TP notification sent to community"
                 
                 embed = discord.Embed(
                     title=f"✅ {tp_level.upper()} Hit Applied",
