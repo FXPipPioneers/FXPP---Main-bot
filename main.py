@@ -25,6 +25,7 @@ import asyncio
 import aiohttp
 from aiohttp import web
 import json
+import math
 from datetime import datetime, timedelta, timezone
 import asyncpg
 import logging
@@ -5860,11 +5861,33 @@ class ActiveTradesView(discord.ui.View):
         await self.update_message(interaction)
     
     async def update_message(self, interaction: discord.Interaction):
+        # Refresh data from database to ensure we have the latest trade statuses
+        fresh_trades = await bot.get_active_trades_from_db()
+        self.active_trades_data = fresh_trades
+        
+        # Recalculate pagination in case trades were added/removed
+        if self.active_trades_data:
+            self.total_pages = math.ceil(len(self.active_trades_data) / self.trades_per_page)
+        else:
+            self.total_pages = 1
+            
+        # Ensure current page is valid after data refresh
+        if self.current_page > self.total_pages:
+            self.current_page = self.total_pages
+            
         embed = await self.create_embed()
         self.update_buttons()
         await interaction.response.edit_message(embed=embed, view=self)
     
     async def create_embed(self):
+        # Handle empty trades case
+        if not self.active_trades_data:
+            return discord.Embed(
+                title="📊 Active Signal Tracking",
+                description="❌ **No active trades found**\n\nThere are currently no trading signals being tracked.",
+                color=discord.Color.red()
+            )
+            
         # Calculate start and end indices for current page
         start_idx = (self.current_page - 1) * self.trades_per_page
         end_idx = min(start_idx + self.trades_per_page, len(self.active_trades_data))
@@ -5902,21 +5925,56 @@ class ActiveTradesView(discord.ui.View):
                 # Build level display
                 levels_display = build_levels_display(trade_data, current_price)
 
-                # TP hits status
+                # Enhanced TP hits status with visual indicators
                 tp_hits = trade_data.get('tp_hits', [])
-                tp_status = f"**TP Hits:** {', '.join([tp.upper() for tp in tp_hits]) if tp_hits else 'None'}"
-
+                status = trade_data.get('status', 'active')
+                manual_overrides = trade_data.get('manual_overrides', [])
+                
+                # Create visual TP status with emojis
+                if tp_hits:
+                    tp_status = f"**TP Hits:** {', '.join([f'🟢 {tp.upper()}' for tp in tp_hits])}"
+                else:
+                    tp_status = "**TP Hits:** None"
+                
+                # Enhanced status indicators
+                status_indicators = []
+                
                 # Breakeven status
-                breakeven_status = ""
                 if trade_data.get("breakeven_active"):
-                    breakeven_status = "\n🔄 **Breakeven SL Active** (TP2 hit)"
+                    status_indicators.append("🔄 **Breakeven SL Active** (TP2 hit)")
+                    
+                # Trade status indicator
+                if 'closed' in status.lower() or 'completed' in status.lower():
+                    if 'sl hit' in status.lower():
+                        status_indicators.append("🔴 **Trade Closed** (SL Hit)")
+                    elif 'tp3 hit' in status.lower():
+                        status_indicators.append("🚀 **Trade Completed** (TP3 Hit)")
+                    elif 'breakeven' in status.lower():
+                        status_indicators.append("🟡 **Trade Closed** (Breakeven After TP2)")
+                    else:
+                        status_indicators.append("⚪ **Trade Closed**")
+                elif 'active' in status.lower():
+                    status_indicators.append("🟢 **Trade Active**")
+                    
+                # Manual override indicator
+                if manual_overrides:
+                    status_indicators.append(f"✋ **Manual Overrides:** {', '.join([override.upper() for override in manual_overrides])}")
 
+                # Combine status indicators
+                combined_status = "\n".join(status_indicators) if status_indicators else ""
+                
                 # Time tracking
                 time_status = f"\n⏱️ Message: {message_id[:8]}..."
 
+                # Build the field value properly
+                field_value = f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}"
+                if combined_status:
+                    field_value += f"\n{combined_status}"
+                field_value += time_status
+                
                 embed.add_field(
                     name=f"📈 {trade_data['pair']} - {trade_data['action']}",
-                    value=f"{price_status}{position_text}\n\n{levels_display}\n{tp_status}{breakeven_status}{time_status}",
+                    value=field_value,
                     inline=False
                 )
 
@@ -6130,25 +6188,36 @@ def build_levels_display(trade_data: dict, current_price: float = None) -> str:
     tp3 = trade_data["tp3"]
     sl = trade_data["sl"]
     tp_hits = trade_data.get('tp_hits', [])
+    status = trade_data.get('status', 'active')
+    
+    # Check if SL was hit based on status or manual overrides
+    manual_overrides = trade_data.get('manual_overrides', [])
+    sl_hit = 'sl hit' in status.lower() or 'sl' in manual_overrides
 
-    # Create level indicators
-    def get_level_indicator(level_name, price, hit=False):
-        hit_marker = "✅" if hit else "⭕"
+    # Create level indicators with proper visual feedback
+    def get_level_indicator(level_name, price, hit=False, is_sl=False):
+        if hit:
+            if is_sl:
+                hit_marker = "🔴"  # Red circle for SL hit
+            else:
+                hit_marker = "✅"  # Green checkmark for TP hit
+        else:
+            hit_marker = "⭕"  # Empty circle for not hit
         return f"{hit_marker} **{level_name}:** ${price:.5f}"
 
     if action == "BUY":
-        # For BUY orders: SL < Entry < TP1 < TP2 < TP3
+        # For BUY orders: Display in order from lowest to highest price: SL < Entry < TP1 < TP2 < TP3
         levels = [
-            get_level_indicator("SL", sl),
+            get_level_indicator("SL", sl, sl_hit, is_sl=True),
             get_level_indicator("Entry", entry),
             get_level_indicator("TP1", tp1, "tp1" in tp_hits),
             get_level_indicator("TP2", tp2, "tp2" in tp_hits),
             get_level_indicator("TP3", tp3, "tp3" in tp_hits)
         ]
     else:
-        # For SELL orders: TP3 < TP2 < TP1 < Entry < SL
+        # For SELL orders: Display in order from highest to lowest price: SL > Entry > TP1 > TP2 > TP3
         levels = [
-            get_level_indicator("SL", sl),
+            get_level_indicator("SL", sl, sl_hit, is_sl=True),
             get_level_indicator("Entry", entry),
             get_level_indicator("TP1", tp1, "tp1" in tp_hits),
             get_level_indicator("TP2", tp2, "tp2" in tp_hits),
@@ -6356,6 +6425,7 @@ class StatusSelectionDropdown(discord.ui.Select):
         await interaction.response.defer()
         
         try:
+            import asyncio  # Move import to top to prevent 'asyncio' not defined errors
             message_id = self.view.selected_trade
             trade_data = self.view.active_trades[message_id]
             pair = trade_data["pair"]
@@ -6405,13 +6475,18 @@ class StatusSelectionDropdown(discord.ui.Select):
                     await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
                     return
                 
-                # Add the TP to hits
-                trade_data["tp_hits"].append(tp_level)
-                
-                # ⚠️ CRITICAL: Mark this TP as manually overridden to prevent automatic re-detection
+                # Initialize manual overrides list
                 manual_overrides = trade_data.get("manual_overrides", [])
-                if tp_level not in manual_overrides:
-                    manual_overrides.append(tp_level)
+                
+                # Helper function to safely add TP hit and mark as manual override
+                def add_tp_hit_and_override(tp_name):
+                    if tp_name not in trade_data["tp_hits"]:
+                        trade_data["tp_hits"].append(tp_name)
+                    if tp_name not in manual_overrides:
+                        manual_overrides.append(tp_name)
+                
+                # Add the selected TP to hits and mark as manual override
+                add_tp_hit_and_override(tp_level)
                 trade_data["manual_overrides"] = manual_overrides
                 
                 # Apply specific logic for each TP level
@@ -6422,10 +6497,10 @@ class StatusSelectionDropdown(discord.ui.Select):
                 elif tp_level == "tp2":
                     # TP2 hit - first send TP1 if not already hit, then TP2
                     if "tp1" not in current_tp_hits:
-                        trade_data["tp_hits"].append("tp1")
+                        add_tp_hit_and_override("tp1")  # Properly mark TP1 as manual override too
+                        trade_data["manual_overrides"] = manual_overrides
                         await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
                         # Small delay between messages
-                        import asyncio
                         await asyncio.sleep(2)
                     
                     # TP2 hit - activate breakeven
@@ -6436,14 +6511,15 @@ class StatusSelectionDropdown(discord.ui.Select):
                 elif tp_level == "tp3":
                     # TP3 hit - first send TP1 and TP2 if not already hit, then TP3
                     if "tp1" not in current_tp_hits:
-                        trade_data["tp_hits"].append("tp1")
+                        add_tp_hit_and_override("tp1")  # Properly mark TP1 as manual override too
+                        trade_data["manual_overrides"] = manual_overrides
                         await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
-                        import asyncio
                         await asyncio.sleep(2)
                     
                     if "tp2" not in current_tp_hits:
-                        trade_data["tp_hits"].append("tp2")
+                        add_tp_hit_and_override("tp2")  # Properly mark TP2 as manual override too
                         trade_data["breakeven_active"] = True
+                        trade_data["manual_overrides"] = manual_overrides
                         await bot.send_tp_notification(message_id, trade_data, "tp2", offline_hit=False, manual_override=True)
                         await asyncio.sleep(2)
                     

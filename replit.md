@@ -1,87 +1,19 @@
 # Discord Trading Bot
 
 ## Overview
-This project is a professional Discord bot designed for trading signal distribution, automatic Take Profit (TP) and Stop Loss (SL) calculations, and comprehensive statistics tracking. Its main purpose is to provide a complete solution for forex and commodity trading communities to efficiently share and track trading signals across multiple Discord channels, enhancing communication and data management for trading insights. The project aims to streamline signal dissemination and performance analysis for trading groups.
+This project is a professional Discord bot designed for trading signal distribution, automatic Take Profit (TP) and Stop Loss (SL) calculations, and comprehensive statistics tracking. Its main purpose is to provide a complete solution for forex and commodity trading communities to efficiently share and track trading signals across multiple Discord channels, enhancing communication and data management for trading insights. The project aims to streamline signal dissemination and performance analysis for trading groups, offering 24/7 persistent tracking and recovery.
 
 ## User Preferences
 - Preferred communication style: Simple, everyday language.
 - Bot owner restricted to Discord ID: 462707111365836801
 - TP/SL calculations updated: TP1=20 pips, TP2=40 pips, TP3=70 pips, SL=50 pips (changed from TP2=50, TP3=100, SL=70)
 
-## Recent Changes (September 8, 2025)
-- **INTERACTIVE MENU OVERRIDE SYSTEM**: Replaced complex message ID system with user-friendly dropdown menus for `/tradeoverride` command - now simply select trade from list and choose status (SL hit, TP1-3 hit) with instant SL/TP notifications
-- **PRICE TRACKING INTERVAL OPTIMIZATION**: Updated price tracking from 3-minute to 8-minute intervals for thorough monitoring - optimizes API efficiency while ensuring no TP/SL hits are missed
-- **UPGRADED API LIMITS & NIGHT SHIFT REMOVAL**: Upgraded to paid CurrencyBeacon subscription with 50,000 monthly API calls - removed night shift system (01:00-07:00 API limitations) for true 24/7 price tracking
-- **SEQUENTIAL API CHECKING OPTIMIZATION**: Price tracking now uses APIs sequentially (CurrencyBeacon → ExchangeRate-API → Currencylayer → AbstractAPI) instead of checking all simultaneously, maximizing efficiency with upgraded API limits
-- **ACTIVETRADES PAGINATION FIX**: Completely revamped /activetrades view command with pagination system (3 trades per page) to prevent Discord character limit issues - no more "application did not respond" errors
-
-## Previous Changes (September 7, 2025)
-- **SIGNAL RECOVERY DATABASE FIX**: Fixed critical bug where signal recovery system found missed signals but failed to save them to database due to missing guild_id field - recovery system now properly saves recovered signals so they appear in /activetrades
-- **DATABASE NUMERIC FIELD OVERFLOW FIX**: Fixed critical database schema issue preventing large price values from being saved by increasing precision from DECIMAL(12,8) to DECIMAL(30,15) for all price columns - now handles any massive price values with up to 15 decimal places from any API
-- **IMMEDIATE DELETION DETECTION FIX**: Fixed critical issue where manually deleted signals still appeared in /activetrades view - now checks for deleted messages immediately when running /activetrades instead of waiting for 5-minute interval
-- **BTCUSD PARSING FIX**: Enhanced regex patterns for better BTCUSD signal parsing reliability with improved decimal number matching
-- **US100/GER40 TRACKING DISABLED**: Permanently disabled signal tracking for US100 and GER40 pairs to prevent tracking these volatile instruments
-- **PRICE TRACKING ALWAYS ON**: Removed /pricetracking command and made price tracking permanently enabled for 24/7 monitoring
-- **COMMAND CLEANUP**: Removed /sl-tpscraper command as it was no longer needed
-- **ENHANCED DEBUG LOGGING**: Added special debug logging for BTCUSD signals to help troubleshoot any future parsing issues
-
-## Previous Changes (September 7, 2025)
-- **LIMIT ORDER FUNCTIONALITY**: Implemented proper limit order handling with `entry_type` field to distinguish between execution and limit orders
-- **ENTRY HIT DETECTION**: Added automatic detection when limit orders are triggered with "@everyone our buy/sell limit has been hit ✅" notifications
-- **LIVE PRICE RECALCULATION**: Limit orders now recalculate TP/SL levels based on current live price when entry is hit, ensuring accurate tracking
-- **STATUS MANAGEMENT**: Limit orders start with "pending_entry" status and automatically switch to "active" once entry price is reached
-- **DATABASE MIGRATION**: Added entry_type column to active_trades table with proper data migration handling
-
-## Previous Changes (September 1, 2025)
-- **24/7 PERSISTENT TRADE TRACKING**: Implemented PostgreSQL database storage for all active trading signals, ensuring trades persist through bot restarts, updates, and downtime
-- **AUTOMATIC PRICE TRACKING**: Price tracking is now enabled by default and runs 24/7 without manual activation
-- **DATABASE-DRIVEN OPERATIONS**: All trade operations (add, update, remove) now use PostgreSQL for complete persistence and data integrity
-- **SEAMLESS RECOVERY**: Bot automatically recovers all active trades from database on startup, maintaining tracking continuity
-- **PRODUCTION-READY**: Enhanced system designed for 24/7 operation on Render.com with full database persistence
-
-## Previous Changes (August 30, 2025)
-- **CRITICAL TP/SL TRACKING FIX**: Implemented live API price-based TP/SL tracking with calculate_live_tracking_levels method for accurate monitoring while showing Discord entry prices on frontend
-- **REMOVED TELEGRAM INTEGRATION**: Completely removed all Telegram features and `/stats` command as requested, cleaned up unused imports and dependencies
-- **ENHANCED DM STATUS SYSTEM**: dmstatus command now automatically removes users who completed 14-day DM sequence for improved data management
-- **INVITE BACKTRACKING**: Added comprehensive system to track pre-existing server invites that existed before invite tracking was enabled
-- **MISSED SIGNAL RECOVERY**: Implemented automatic signal recovery system for when bot goes down, with live price alignment for accurate tracking restart
-- **ENHANCED ANTI-ABUSE SYSTEM**: Added sophisticated abuse prevention using account age verification (7+ days) and rapid join pattern detection (max 5 joins/hour)
-- **LEADERBOARD FUNCTIONALITY**: Added comprehensive leaderboard to `/level` command showing top community members ranked by level and message count
-- **NEW MANAGEMENT COMMANDS**: Added `/antiabuse` command for complete anti-abuse system management (view, block, unblock, stats)
-- **ENHANCED API DOCUMENTATION**: Provided detailed step-by-step registration instructions for all 4 price tracking APIs with comprehensive setup guides
-
-## 🚀 PRODUCTION DEPLOYMENT - RENDER.COM
-
-**CRITICAL: This bot runs 24/7 on Render.com hosting platform**
-
-### Render Configuration
-- **Platform**: Render.com Web Service (Python runtime)
-- **Database**: Render managed PostgreSQL database instance
-- **Region**: Oregon (configured in render.yaml)
-- **Runtime**: Python 3.11.0
-- **Plan**: Free tier with automatic scaling
-- **Health Monitoring**: /health endpoint for continuous uptime monitoring
-- **Auto-deploy**: Disabled (manual deployments only)
-
-### Database Setup
-- **Provider**: Render PostgreSQL (managed database)
-- **Connection**: Via DATABASE_URL environment variable
-- **Backup**: Automatic backups handled by Render
-- **Connection Pool**: asyncpg with connection pooling for optimal performance
-- **Tables**: All bot data stored in Render's PostgreSQL instance
-
-### Environment Variables (Set in Render Dashboard)
-- DISCORD_TOKEN_PART1 & DISCORD_TOKEN_PART2 (split for security)
-- DISCORD_CLIENT_ID_PART1 & DISCORD_CLIENT_ID_PART2
-- DATABASE_URL (automatically provided by Render PostgreSQL)
-- **Price Tracking APIs**: FXAPI_KEY, ALPHA_VANTAGE_KEY, TWELVE_DATA_KEY, FMP_KEY (for live price monitoring)
-
-### Deployment Files
-- `render.yaml`: Service configuration for Render deployment
-- `main.py`: Entry point with health check endpoint on /health
-- All dependencies specified in render.yaml buildCommand
-
-**IMPORTANT**: Any code changes must be compatible with Render's PostgreSQL database and Python 3.11 runtime.
+## Recent Improvements (September 10, 2025)
+- **Bulletproof TP/SL Detection**: Enhanced reliability with comprehensive API failure handling, duplicate protection, and database consistency verification
+- **Instant Signal Tracking**: New trades checked immediately after `/entry` command instead of waiting 8 minutes
+- **Optimized API Usage**: Reverted to 8-minute intervals respecting 15-minute API refresh cycles while maintaining instant checks for new signals
+- **Enhanced Error Visibility**: All critical failures now logged to debug channel with highly visible alerts
+- **Perfect Override/Tracking Unity**: Fixed synchronization between manual `/tradeoverride` and automatic tracking to prevent duplicate TP/SL notifications - when you manually set a status, the automatic system completely respects it
 
 ## System Architecture
 
@@ -90,71 +22,45 @@ This project is a professional Discord bot designed for trading signal distribut
 - **Framework**: Discord.py 2.5.2 (async/await architecture)
 - **Environment Management**: python-dotenv for configuration
 - **Web Framework**: aiohttp for web server functionality
-- **Deployment**: **RENDER.COM 24/7 HOSTING** (Production deployment with Render PostgreSQL database)
+- **Database**: PostgreSQL (managed by Render)
+- **Deployment**: Render.com (24/7 hosting with automatic scaling)
 
 ### Security Architecture
-- **Split Token System**: Discord bot tokens are split into two environment variables for enhanced security.
+- **Split Token System**: Discord bot tokens are split into two environment variables.
 - **Environment-based Configuration**: All sensitive data is stored in environment variables.
 - **Secure Deployment**: No hardcoded credentials in source code.
 
-### Key Features
+### UI/UX Decisions
+- **Interactive Override System**: User-friendly dropdown menus for `/tradeoverride` command.
+- **Pagination**: `/activetrades` command uses pagination to prevent Discord character limit issues.
+- **Professional Embeds**: Giveaways and other bot communications utilize professional embeds.
+- **Visual Indicators**: Live tracking displays visual level indicators for hit TP/SL levels.
 
-#### Bot Commands
-- **`/entry`**: Creates and distributes trading signals with automatic TP/SL calculation, multi-channel distribution, and role tagging. Supports various forex and commodity pairs.
-- **`/giveaway`**: Comprehensive giveaway management system supporting step-by-step setup, flexible durations, role-based entry, winner selection, and professional embeds.
-- **`/dbstatus`**: Monitors database health, connection status, table verification, and performance metrics.
-- **`/timedautorole`**: Manages automatic role assignment system for new members with configurable duration and weekend handling.
-- **`/dmstatus`**: Tracks and displays which users have received 3, 7, or 14-day follow-up messages after their timed auto-role expires.
-- **`/invitetracking`**: Comprehensive invite tracking system for managing server invites, setting nicknames, viewing statistics, and tracking member retention through specific invite links.
-- **`/pricetracking`**: Toggle the live price tracking system on/off with real-time monitoring configuration.
-- **`/activetrades`**: View detailed status of all tracked trading signals with live price analysis, exact position relative to SL/TP levels (e.g., "Between TP1 and TP2 - In Profit"), visual level indicators with checkmarks for hit levels, and automatic cleanup when signals complete.
-- **`/pricetest`**: Test live price retrieval for any trading pair using multiple API fallbacks.
-- **`/level`**: Check individual user level/message count or display server leaderboard with top community members ranked by activity.
-- **`/antiabuse`**: Comprehensive anti-abuse system management for viewing blocked users, manual blocking/unblocking, and viewing abuse prevention statistics.
+### Feature Specifications
+- **Trading Signal Management**:
+    - **`/entry`**: Creates and distributes trading signals with automatic TP/SL calculation and multi-channel distribution.
+    - **Live Price Tracking**: Real-time monitoring of active trades with automatic TP/SL detection and breakeven logic.
+    - **Limit Order Functionality**: Handles limit orders, detects entry hits, and recalculates TP/SL based on live prices.
+    - **Signal Recovery**: Automatic recovery of active trades from the database on startup.
+    - **Override System**: Allows manual override of trade statuses (SL hit, TP1-3 hit) with instant notifications.
+- **Community Management**:
+    - **`/giveaway`**: Comprehensive giveaway management.
+    - **`/timedautorole`**: Manages automatic role assignment for new members.
+    - **`/dmstatus`**: Tracks follow-up messages for timed auto-role users.
+    - **`/invitetracking`**: Tracks server invites and member retention.
+    - **`/level`**: Tracks user activity, displays individual levels, and shows a server leaderboard.
+    - **`/antiabuse`**: Manages a system for blocking abusive users based on account age and join patterns.
+- **System Monitoring**:
+    - **`/dbstatus`**: Monitors database health and performance.
+    - **`/activetrades`**: Views detailed status of all tracked signals with live price analysis.
+    - **`/pricetest`**: Tests live price retrieval from APIs.
 
-#### Trading Logic
-- **Pip Calculation Engine**: Instrument-specific pip value calculations.
-- **Price Formatting**: Decimal precision based on trading pair requirements.
-- **Automatic TP/SL Generation**: Standardized TP1, TP2, TP3, and SL levels based on pip values from entry.
-
-#### Message Distribution
-- **Multi-channel Broadcasting**: Simultaneous signal distribution to selected channels.
-- **Role Tagging System**: Configurable role mentions at the bottom of messages.
-
-#### Community Management
-- **Level System**: Tracks user messages and calculates experience levels with comprehensive leaderboard functionality showing top community members.
-- **Anti-Abuse Protection**: Sophisticated abuse prevention using account age verification (7+ days) and rapid join pattern detection (max 5 joins/hour).
-- **Comprehensive Tracking**: All systems use Render PostgreSQL for persistent 24/7 data storage with automatic recovery capabilities.
-
-#### Timed Auto-Role System
-- **Automatic Role Assignment**: Assigns specified roles to new members upon joining with a configurable duration.
-- **Automatic Role Removal**: Removes expired roles via a background monitoring task.
-- **Custom DM Notifications**: Sends personalized messages when roles expire.
-- **Persistent Storage**: Maintains member tracking across bot restarts.
-- **Admin Controls**: `/timedautorole` command for management.
-
-#### Live Price Tracking System
-- **Real-time Monitoring**: Automatically detects and tracks trading signals containing "Trade Signal For:" from owner and bot messages.
-- **Multiple API Fallbacks**: Uses FXApi, Twelve Data, Alpha Vantage, and Financial Modeling Prep APIs for reliable price data.
-- **Smart TP/SL Detection**: Monitors all TP1, TP2, TP3, and SL levels with precise price comparison logic.
-- **Breakeven Logic**: After TP2 is hit, automatically moves SL to entry price and monitors for breakeven scenarios.
-- **Professional Notifications**: Sends @everyone alerts when TP/SL levels are hit with detailed status updates.
-- **Background Task**: 30-second interval price checking for all active trades with error handling and cleanup.
-- **Owner-Only Control**: Complete system management restricted to Discord ID 462707111365836801.
-- **Automatic Signal Parsing**: Intelligent regex-based extraction of pair, action, entry, TP1-3, and SL from signal messages.
-- **Excluded Channel**: Respects excluded channel ID 1394958907943817326 to prevent tracking test signals.
-
-### Data Flow
-- **Command Input**: User executes slash command.
-- **Parameter Validation**: Bot validates input.
-- **Calculation Engine**: Performs TP/SL calculations.
-- **Message Generation**: Formats output professionally.
-- **Multi-channel Distribution**: Broadcasts to selected channels.
-- **Role Notification**: Tags specified roles.
-
-### Deployment Strategy
-- **Multi-platform Support**: Deployment on Heroku, Railway, DigitalOcean App Platform, and Replit.
-- **Deployment Configuration**: Standard build and start commands for Python applications.
+### System Design Choices
+- **Persistent Data Storage**: PostgreSQL database for all active trading signals, ensuring data persistence across restarts.
+- **24/7 Operation**: Designed for continuous operation with automatic price tracking and API fallback mechanisms.
+- **Optimized Price Tracking**: Sequential API checking and reduced price check intervals for responsiveness and efficiency.
+- **Robust Error Handling**: Critical errors (API failures, database errors) are logged to a debug channel with visible alerts.
+- **Reliable TP/SL Detection**: Comprehensive system to prevent missed TP hits, including API failure handling, duplicate protection, and data consistency verification.
 
 ## External Dependencies
 
@@ -163,19 +69,24 @@ This project is a professional Discord bot designed for trading signal distribut
 - `python-dotenv==1.1.0`
 - `aiohttp==3.12.13`
 - `asyncpg==0.30.0`
-- `pyrogram==2.0.106`
-- `tgcrypto==1.2.5`
 - `pytz>=2025.2`
 - `requests>=2.32.4`
 
-### Discord API Requirements
-- Bot token with permissions for Send Messages, Use Slash Commands, Mention Everyone, and Read Message History.
-- For auto-role system: Manage Roles, Send Messages, Use Slash Commands, View Members.
+### APIs and Services
+- **Discord API**: For bot functionality and interaction.
+- **PostgreSQL**: Managed database service (Render PostgreSQL).
+- **Price Tracking APIs**:
+    - CurrencyBeacon
+    - ExchangeRate-API
+    - Currencylayer
+    - AbstractAPI
+    - FXApi
+    - Twelve Data
+    - Alpha Vantage
+    - Financial Modeling Prep (FMP)
 
 ### Environment Variables
 - `DISCORD_TOKEN_PART1`, `DISCORD_TOKEN_PART2`
 - `DISCORD_CLIENT_ID_PART1`, `DISCORD_CLIENT_ID_PART2`
-- `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_PHONE_NUMBER`
-- `TELEGRAM_SOURCE_CHAT_ID` (optional)
-- `TELEGRAM_DEFAULT_CHANNELS` (comma-separated)
-- `TELEGRAM_DEFAULT_ROLES` (comma-separated)
+- `DATABASE_URL`
+- `FXAPI_KEY`, `ALPHA_VANTAGE_KEY`, `TWELVE_DATA_KEY`, `FMP_KEY`
