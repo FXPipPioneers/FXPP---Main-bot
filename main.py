@@ -989,6 +989,15 @@ class TradingBot(commands.Bot):
                 except Exception as e:
                     print(f"Database migration info: {e}")  # May already exist
                 
+                try:
+                    await conn.execute('''
+                        ALTER TABLE active_trades 
+                        ADD COLUMN IF NOT EXISTS manual_overrides TEXT DEFAULT ''
+                    ''')
+                    print("✅ Database migration: ensured manual_overrides column exists for sync integration")
+                except Exception as e:
+                    print(f"Database migration info: {e}")  # May already exist
+                
                 # Fix numeric field overflow by using DECIMAL(30,15) for massive prices with many decimal places
                 try:
                     await conn.execute('''
@@ -1989,6 +1998,7 @@ class TradingBot(commands.Bot):
                         "tp_hits": row['tp_hits'].split(',') if row['tp_hits'] else [],
                         "breakeven_active": row['breakeven_active'],
                         "entry_type": row.get('entry_type'),  # Add entry_type field
+                        "manual_overrides": row.get('manual_overrides', '').split(',') if row.get('manual_overrides') else [],  # Add manual_overrides field
                         "channel_id": row['channel_id'],
                         "guild_id": row['guild_id'],
                         "message_id": row['message_id'],
@@ -2022,8 +2032,8 @@ class TradingBot(commands.Bot):
                             message_id, channel_id, guild_id, pair, action,
                             entry_price, tp1_price, tp2_price, tp3_price, sl_price,
                             discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
-                            live_entry, assigned_api, status, tp_hits, breakeven_active, entry_type
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+                            live_entry, assigned_api, status, tp_hits, breakeven_active, entry_type, manual_overrides
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
                     ''', 
                     message_id, trade_data.get("channel_id"), trade_data.get("guild_id"),
                     trade_data["pair"], trade_data["action"], 
@@ -2032,7 +2042,8 @@ class TradingBot(commands.Bot):
                     trade_data.get("discord_tp3"), trade_data.get("discord_sl"),
                     trade_data.get("live_entry"), trade_data.get("assigned_api", "currencybeacon"), 
                     trade_data.get("status", "active"), ','.join(trade_data.get("tp_hits", [])), 
-                    trade_data.get("breakeven_active", False), trade_data.get("entry_type")
+                    trade_data.get("breakeven_active", False), trade_data.get("entry_type"),
+                    ','.join(trade_data.get("manual_overrides", []))
                     )
                 # Send success confirmation to debug channel
                 debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
@@ -2056,11 +2067,12 @@ class TradingBot(commands.Bot):
                 async with self.db_pool.acquire() as conn:
                     await conn.execute('''
                         UPDATE active_trades SET 
-                            status = $2, tp_hits = $3, breakeven_active = $4, last_updated = NOW()
+                            status = $2, tp_hits = $3, breakeven_active = $4, manual_overrides = $5, last_updated = NOW()
                         WHERE message_id = $1
                     ''', 
                     message_id, trade_data.get("status", "active"),
-                    ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False)
+                    ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False),
+                    ','.join(trade_data.get("manual_overrides", []))
                     )
             except Exception as e:
                 # Send error details to debug channel instead of silently failing
@@ -2719,8 +2731,9 @@ class TradingBot(commands.Bot):
             if "tp2" in tp_hits_set:
                 trade_data["breakeven_active"] = True
             
-            # Determine if we should check breakeven (after TP2 hit)
-            if trade_data.get("breakeven_active", False):
+            # Determine if we should check breakeven (after TP2 hit) but respect manual overrides
+            manual_overrides_set = set(trade_data.get("manual_overrides", []))
+            if trade_data.get("breakeven_active", False) and "breakeven" not in manual_overrides_set:
                 # Check if price returned to entry (breakeven SL)
                 if action == "BUY" and current_price <= entry:
                     await self.handle_breakeven_hit(message_id, trade_data)
@@ -2729,12 +2742,16 @@ class TradingBot(commands.Bot):
                     await self.handle_breakeven_hit(message_id, trade_data)
                     return True
             else:
-                # Check SL first - but apply trading logic validation
+                # Check SL first - but apply trading logic validation and respect manual overrides
+                manual_overrides_set = set(trade_data.get("manual_overrides", []))
                 sl_hit = False
-                if action == "BUY" and current_price <= trade_data["sl"]:
-                    sl_hit = True
-                elif action == "SELL" and current_price >= trade_data["sl"]:
-                    sl_hit = True
+                
+                # Only check SL if it wasn't manually overridden
+                if "sl" not in manual_overrides_set:
+                    if action == "BUY" and current_price <= trade_data["sl"]:
+                        sl_hit = True
+                    elif action == "SELL" and current_price >= trade_data["sl"]:
+                        sl_hit = True
                 
                 if sl_hit:
                     # Rule 2: SL cannot hit after TP2 (breakeven protection)
@@ -2750,23 +2767,25 @@ class TradingBot(commands.Bot):
                     return True
 
                 # Check TP levels with comprehensive detection - detect ALL TPs that have been hit
+                # ⚠️ CRITICAL: Respect manual overrides to prevent duplicate notifications
+                manual_overrides_set = set(trade_data.get("manual_overrides", []))
                 tp_levels_hit = []
                 
                 if action == "BUY":
-                    # For BUY orders, check if price has reached each TP level
-                    if "tp1" not in tp_hits_set and current_price >= trade_data["tp1"]:
+                    # For BUY orders, check if price has reached each TP level (but NOT if manually overridden)
+                    if "tp1" not in tp_hits_set and "tp1" not in manual_overrides_set and current_price >= trade_data["tp1"]:
                         tp_levels_hit.append("tp1")
-                    if "tp2" not in tp_hits_set and current_price >= trade_data["tp2"]:
+                    if "tp2" not in tp_hits_set and "tp2" not in manual_overrides_set and current_price >= trade_data["tp2"]:
                         tp_levels_hit.append("tp2")
-                    if "tp3" not in tp_hits_set and current_price >= trade_data["tp3"]:
+                    if "tp3" not in tp_hits_set and "tp3" not in manual_overrides_set and current_price >= trade_data["tp3"]:
                         tp_levels_hit.append("tp3")
                 elif action == "SELL":
-                    # For SELL orders, check if price has reached each TP level
-                    if "tp1" not in tp_hits_set and current_price <= trade_data["tp1"]:
+                    # For SELL orders, check if price has reached each TP level (but NOT if manually overridden)
+                    if "tp1" not in tp_hits_set and "tp1" not in manual_overrides_set and current_price <= trade_data["tp1"]:
                         tp_levels_hit.append("tp1")
-                    if "tp2" not in tp_hits_set and current_price <= trade_data["tp2"]:
+                    if "tp2" not in tp_hits_set and "tp2" not in manual_overrides_set and current_price <= trade_data["tp2"]:
                         tp_levels_hit.append("tp2")
-                    if "tp3" not in tp_hits_set and current_price <= trade_data["tp3"]:
+                    if "tp3" not in tp_hits_set and "tp3" not in manual_overrides_set and current_price <= trade_data["tp3"]:
                         tp_levels_hit.append("tp3")
                 
                 # Process all TP hits found (in order: TP1, TP2, TP3)
@@ -6350,6 +6369,13 @@ class StatusSelectionDropdown(discord.ui.Select):
             if status == "sl_hit":
                 # SL hit - ends the trade
                 trade_data["status"] = "closed (sl hit - manual override)"
+                
+                # ⚠️ CRITICAL: Mark SL as manually overridden to prevent automatic re-detection
+                manual_overrides = trade_data.get("manual_overrides", [])
+                if "sl" not in manual_overrides:
+                    manual_overrides.append("sl")
+                trade_data["manual_overrides"] = manual_overrides
+                
                 await bot.remove_trade_from_db(message_id)
                 await bot.send_sl_notification(message_id, trade_data, offline_hit=False, manual_override=True)
                 
@@ -6381,6 +6407,12 @@ class StatusSelectionDropdown(discord.ui.Select):
                 
                 # Add the TP to hits
                 trade_data["tp_hits"].append(tp_level)
+                
+                # ⚠️ CRITICAL: Mark this TP as manually overridden to prevent automatic re-detection
+                manual_overrides = trade_data.get("manual_overrides", [])
+                if tp_level not in manual_overrides:
+                    manual_overrides.append(tp_level)
+                trade_data["manual_overrides"] = manual_overrides
                 
                 # Apply specific logic for each TP level
                 if tp_level == "tp1":
@@ -6471,6 +6503,13 @@ class StatusSelectionDropdown(discord.ui.Select):
                 
                 # Mark the trade as closed due to breakeven after TP2
                 trade_data["status"] = "closed (breakeven after tp2 - manual override)"
+                
+                # ⚠️ CRITICAL: Mark breakeven as manually overridden to prevent automatic re-detection
+                manual_overrides = trade_data.get("manual_overrides", [])
+                if "breakeven" not in manual_overrides:
+                    manual_overrides.append("breakeven")
+                trade_data["manual_overrides"] = manual_overrides
+                
                 await bot.remove_trade_from_db(message_id)
                 await bot.send_breakeven_notification(message_id, trade_data, offline_hit=False)
                 
