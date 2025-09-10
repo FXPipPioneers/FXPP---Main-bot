@@ -130,7 +130,7 @@ PRICE_TRACKING_CONFIG = {
     },
     "api_priority_order": ["currencybeacon", "exchangerate_api", "currencylayer", "abstractapi"],
     "last_price_check": {},  # pair: last_check_timestamp
-    "check_interval": 480,  # 8 minutes - ensures nothing is missed while staying efficient
+    "check_interval": 120,  # 2 minutes - more frequent checks to catch all TP/SL hits
     "api_rotation_index": 0  # for tracking which API failed (for debugging)
 }
 
@@ -719,7 +719,7 @@ class TradingBot(commands.Bot):
         else:
             return f"{seconds}s"
 
-    @tasks.loop(seconds=480)  # 8 minute interval - ensures thorough monitoring
+    @tasks.loop(seconds=480)  # 8 minute interval - optimized for 15-minute API refresh cycles
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - 24/7 monitoring with upgraded API limits"""
         # Record the time of this price check
@@ -1736,7 +1736,14 @@ class TradingBot(commands.Bot):
                     await self.debug_to_channel("6. DATABASE STORAGE", 
                         f"✅ Trade saved to database successfully", "✅")
 
-                    await self.debug_to_channel("7. TRACKING ACTIVATED", 
+                    # IMMEDIATE TRACKING: Start checking this trade right away instead of waiting up to 2 minutes
+                    await self.debug_to_channel("7. IMMEDIATE TRACKING", 
+                        f"Starting immediate price monitoring for {trade_data['pair']}", "🔄")
+                    
+                    # Do an immediate price check to verify current position vs levels
+                    await self.check_single_trade_immediately(str(message.id), trade_data)
+
+                    await self.debug_to_channel("8. TRACKING ACTIVATED", 
                         f"✅ Signal tracking activated for {trade_data['pair']} {trade_data['action']}\n" +
                         f"Entry: {trade_data.get('live_entry', 'No Price')}\n" +
                         f"Assigned API: {assigned_api}\n" +
@@ -2680,6 +2687,9 @@ class TradingBot(commands.Bot):
                 await self.remove_trade_from_db(message_id)
                 return True  # Return True to indicate this trade should be removed from active tracking
                 
+            # Verify trade data consistency between memory and database to prevent missed hits
+            trade_data = await self.verify_trade_data_consistency(message_id, trade_data)
+            
             # Check if this is a pending limit order waiting for entry
             if trade_data.get("status") == "pending_entry":
                 return await self.check_limit_entry_hit(message_id, trade_data)
@@ -2687,10 +2697,16 @@ class TradingBot(commands.Bot):
             assigned_api = trade_data.get("assigned_api", "currencybeacon")
             current_price = await self.get_live_price(trade_data["pair"], specific_api=assigned_api)
             
-            # If assigned API fails, try fallback
+            # If assigned API fails, try fallback with comprehensive retry
             if current_price is None:
-                current_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
+                await self.debug_to_channel("PRICE CHECK", 
+                    f"⚠️ Assigned API {assigned_api} failed for {trade_data['pair']}, trying fallback...", "⚠️")
+                current_price = await self.get_live_price(trade_data["pair"], use_all_apis=True)  # Use all APIs for maximum reliability
                 if current_price is None:
+                    await self.debug_to_channel("PRICE CHECK", 
+                        f"❌ ALL APIs failed for {trade_data['pair']} - CRITICAL: TP/SL check skipped!", "❌")
+                    # Log this as a critical issue since we're missing price checks
+                    await self.log_to_discord(f"🚨 CRITICAL: All APIs failed for {trade_data['pair']} - TP/SL monitoring temporarily unavailable")
                     return False
 
             action = trade_data["action"]
@@ -2772,14 +2788,34 @@ class TradingBot(commands.Bot):
             return False
 
         except Exception as e:
-            print(f"Error checking price levels for {message_id}: {e}")
+            # Enhanced error logging for debugging missed hits
+            await self.debug_to_channel("PRICE CHECK ERROR", 
+                f"❌ CRITICAL ERROR checking {trade_data.get('pair', 'unknown')} levels: {str(e)}", "❌")
+            await self.log_to_discord(f"🚨 CRITICAL: Error checking TP/SL levels for {trade_data.get('pair', 'unknown')}: {str(e)}")
+            import traceback
+            full_error = traceback.format_exc()
+            print(f"❌ CRITICAL: Error checking price levels for {message_id}: {e}")
+            print(f"Full traceback: {full_error}")
+            # Return False but ensure this error is highly visible
             return False
 
     async def handle_tp_hit(self, message_id: str, trade_data: Dict, tp_level: str, offline_hit: bool = False):
         """Handle when a TP level is hit"""
         try:
-            # Update trade data
-            trade_data["tp_hits"].append(tp_level)
+            # Enhanced TP hit logging for debugging
+            await self.debug_to_channel("TP HIT PROCESSING", 
+                f"🎯 Processing {tp_level.upper()} hit for {trade_data['pair']} {trade_data['action']}", "🎯")
+            
+            # Update trade data with duplicate protection
+            current_tp_hits = trade_data.get("tp_hits", [])
+            if tp_level not in current_tp_hits:
+                trade_data["tp_hits"].append(tp_level)
+                await self.debug_to_channel("TP HIT PROCESSING", 
+                    f"✅ Added {tp_level.upper()} to hits list. Current hits: {trade_data['tp_hits']}", "✅")
+            else:
+                await self.debug_to_channel("TP HIT PROCESSING", 
+                    f"⚠️ {tp_level.upper()} already in hits list - duplicate protection activated", "⚠️")
+                return  # Prevent duplicate processing
 
             if tp_level == "tp2":
                 # After TP2, activate breakeven
@@ -2800,7 +2836,14 @@ class TradingBot(commands.Bot):
             await self.send_tp_notification(message_id, trade_data, tp_level, offline_hit)
 
         except Exception as e:
-            print(f"Error handling TP hit: {e}")
+            # Enhanced error logging for TP hit failures
+            await self.debug_to_channel("TP HIT ERROR", 
+                f"❌ CRITICAL ERROR processing {tp_level.upper()} hit for {trade_data.get('pair', 'unknown')}: {str(e)}", "❌")
+            await self.log_to_discord(f"🚨 CRITICAL: Failed to process {tp_level.upper()} hit for {trade_data.get('pair', 'unknown')}: {str(e)}")
+            import traceback
+            full_error = traceback.format_exc()
+            print(f"❌ CRITICAL: Error handling TP hit: {e}")
+            print(f"Full traceback: {full_error}")
 
     async def handle_sl_hit(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
         """Handle when SL is hit"""
@@ -2829,6 +2872,114 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"Error handling breakeven hit: {e}")
+
+    async def check_single_trade_immediately(self, message_id: str, trade_data: Dict):
+        """Check a single trade immediately for any TP/SL hits - used for immediate tracking after signal creation"""
+        try:
+            # Get current price to check if any levels were hit using API priority order
+            current_price = await self.get_live_price(trade_data["pair"], specific_api=trade_data.get("assigned_api"))
+            if current_price is None:
+                # Try fallback if assigned API fails
+                current_price = await self.get_live_price(trade_data["pair"], use_all_apis=False)
+                
+            if current_price is None:
+                await self.debug_to_channel("IMMEDIATE CHECK", 
+                    f"❌ Could not get price for immediate check of {trade_data['pair']}", "⚠️")
+                return
+
+            await self.debug_to_channel("IMMEDIATE CHECK", 
+                f"Checking {trade_data['pair']} immediately - Current price: {current_price}", "🔍")
+
+            action = trade_data["action"]
+            entry = trade_data["entry"]
+            tp_hits = trade_data.get('tp_hits', [])
+
+            # Check for SL hit immediately 
+            if action == "BUY" and current_price <= trade_data["sl"]:
+                await self.debug_to_channel("IMMEDIATE CHECK", 
+                    f"⚠️ {trade_data['pair']} is already at/below SL level immediately after signal creation!", "⚠️")
+                await self.handle_sl_hit(message_id, trade_data, offline_hit=False)
+                return
+            elif action == "SELL" and current_price >= trade_data["sl"]:
+                await self.debug_to_channel("IMMEDIATE CHECK", 
+                    f"⚠️ {trade_data['pair']} is already at/above SL level immediately after signal creation!", "⚠️")
+                await self.handle_sl_hit(message_id, trade_data, offline_hit=False)
+                return
+
+            # Check for TP hits immediately - detect ALL TPs that have been surpassed
+            tp_levels_hit = []
+            
+            if action == "BUY":
+                if "tp1" not in tp_hits and current_price >= trade_data["tp1"]:
+                    tp_levels_hit.append("tp1")
+                if "tp2" not in tp_hits and current_price >= trade_data["tp2"]:
+                    tp_levels_hit.append("tp2")
+                if "tp3" not in tp_hits and current_price >= trade_data["tp3"]:
+                    tp_levels_hit.append("tp3")
+            elif action == "SELL":
+                if "tp1" not in tp_hits and current_price <= trade_data["tp1"]:
+                    tp_levels_hit.append("tp1")
+                if "tp2" not in tp_hits and current_price <= trade_data["tp2"]:
+                    tp_levels_hit.append("tp2")
+                if "tp3" not in tp_hits and current_price <= trade_data["tp3"]:
+                    tp_levels_hit.append("tp3")
+
+            # Handle any TP hits found
+            for tp_level in tp_levels_hit:
+                await self.debug_to_channel("IMMEDIATE CHECK", 
+                    f"⚠️ {trade_data['pair']} has already reached {tp_level.upper()} immediately after signal creation!", "⚠️")
+                await self.handle_tp_hit(message_id, trade_data, tp_level, offline_hit=False)
+
+            if not tp_levels_hit:
+                await self.debug_to_channel("IMMEDIATE CHECK", 
+                    f"✅ {trade_data['pair']} is in proper position - no immediate hits detected", "✅")
+
+        except Exception as e:
+            await self.debug_to_channel("IMMEDIATE CHECK", 
+                f"❌ Error during immediate check: {str(e)}", "❌")
+            print(f"Immediate check error: {e}")
+
+    async def verify_trade_data_consistency(self, message_id: str, memory_trade_data: Dict) -> Dict:
+        """Verify trade data consistency between memory and database to prevent missed hits due to sync issues"""
+        try:
+            if not self.db_pool:
+                return memory_trade_data  # No database available, use memory data
+            
+            # Get trade from database
+            async with self.db_pool.acquire() as conn:
+                db_trade = await conn.fetchrow(
+                    'SELECT * FROM active_trades WHERE message_id = $1', message_id
+                )
+                
+                if not db_trade:
+                    await self.debug_to_channel("DATA SYNC", 
+                        f"⚠️ Trade {message_id[:8]}... missing from database but exists in memory", "⚠️")
+                    return memory_trade_data
+                
+                # Convert database row to dict and compare TP hits
+                db_tp_hits = db_trade['tp_hits'].split(',') if db_trade['tp_hits'] else []
+                memory_tp_hits = memory_trade_data.get('tp_hits', [])
+                
+                # Remove empty strings from db_tp_hits
+                db_tp_hits = [hit for hit in db_tp_hits if hit.strip()]
+                
+                if set(db_tp_hits) != set(memory_tp_hits):
+                    await self.debug_to_channel("DATA SYNC", 
+                        f"⚠️ TP hits mismatch for {memory_trade_data.get('pair', 'unknown')}! DB: {db_tp_hits} vs Memory: {memory_tp_hits}", "⚠️")
+                    # Use database data as source of truth and update memory
+                    memory_trade_data['tp_hits'] = db_tp_hits
+                    memory_trade_data['breakeven_active'] = db_trade['breakeven_active']
+                    memory_trade_data['status'] = db_trade['status']
+                    await self.debug_to_channel("DATA SYNC", 
+                        f"✅ Synchronized memory data with database for {memory_trade_data.get('pair', 'unknown')}", "✅")
+                
+                return memory_trade_data
+                
+        except Exception as e:
+            await self.debug_to_channel("DATA SYNC ERROR", 
+                f"❌ Error verifying trade data consistency: {str(e)}", "❌")
+            print(f"Data consistency check error: {e}")
+            return memory_trade_data  # Return original data on error
 
     async def check_message_deleted(self, message_id: str, channel_id: int) -> bool:
         """Check if the original trade signal message has been deleted"""
@@ -3110,7 +3261,7 @@ class TradingBot(commands.Bot):
         import random
 
         try:
-            # Random messages for SL hits
+            # Random messages for SL hits (10 messages)
             sl_messages = [
                 "@everyone This one hit SL. It happens. Let's stay focused and get the next one 🔄🧠",
                 "@everyone SL has been hit. Risk was managed, we move on 💪📉",
@@ -3120,7 +3271,8 @@ class TradingBot(commands.Bot):
                 "@everyone SL hit. Trust the process and prepare for the next opportunity 🔄🧠",
                 "@everyone SL was hit on this one. We took the loss, now let's stay sharp 🔁💪",
                 "@everyone SL hit. It's part of the game. Let's stay focused on quality 📉🎯",
-                "@everyone This trade hit SL. Discipline keeps us in the game. We´ll get the loss back next trade💼🧘‍♂️"
+                "@everyone This trade hit SL. Discipline keeps us in the game. We´ll get the loss back next trade💼🧘‍♂️",
+                "@everyone SL triggered. Part of proper risk management. Next setup coming soon 💪⚡"
             ]
 
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
@@ -3132,10 +3284,26 @@ class TradingBot(commands.Bot):
             print(f"Error sending SL notification: {e}")
 
     async def send_breakeven_notification(self, message_id: str, trade_data: Dict, offline_hit: bool = False):
-        """Send breakeven hit notification"""
+        """Send breakeven hit notification with random message selection"""
+        import random
+        
         try:
+            # Random messages for breakeven hits (10 messages)
+            breakeven_messages = [
+                "@everyone TP2 has been hit & price has reversed to breakeven, so as usual, we're out safe 🫡",
+                "@everyone Price returned to breakeven after hitting TP2. Smart exit, we secured profits and protected capital 💼✅",
+                "@everyone Breakeven reached after TP2 hit. Clean trade management - we're out with gains secured 🎯🔒",
+                "@everyone TP2 was hit, now back to breakeven. Perfect trade execution, we exit safe and profitable 📊🛡️",
+                "@everyone Price reversed to entry after TP2. Textbook risk management - we're out with profits locked in 💰🧠",
+                "@everyone Breakeven hit after TP2. Smart trading discipline pays off. We're out safe and ahead 🚀⚖️",
+                "@everyone Back to breakeven post-TP2. This is how we protect profits. Clean exit, clean conscience 💎🔐",
+                "@everyone TP2 secured, now at breakeven. Professional trade management - we exit with gains protected 📈🛡️",
+                "@everyone Price action brought us back to entry after TP2. Strategic exit with profits in the bag 🎯💼",
+                "@everyone Breakeven reached after TP2 hit. This is disciplined trading - we're out safe with profits secured 🧘‍♂️💸"
+            ]
+            
             message = await self.get_channel(trade_data.get("channel_id")).fetch_message(int(message_id))
-            notification = f"@everyone TP2 has been hit & price has reversed to breakeven, so as usual, we're out safe 🫡"
+            notification = random.choice(breakeven_messages)
 
             await message.reply(notification)
 
@@ -4420,6 +4588,33 @@ Stop Loss: {levels['sl']}"""
             await interaction.response.send_message(
                 f"✅ Signal sent to: {', '.join(sent_channels)}",
                 ephemeral=True)
+            
+            # 🚀 INSTANT PRICE CHECK: Check new trade immediately instead of waiting 8 minutes
+            # This optimizes API usage while ensuring immediate monitoring at signal creation
+            try:
+                await asyncio.sleep(3)  # Brief delay to allow message processing and potential tracking setup
+                
+                # Get active trades and find this newly created one
+                active_trades = await bot.get_active_trades_from_db()
+                new_trade_found = False
+                
+                for message_id, trade_data in active_trades.items():
+                    if (trade_data.get('pair') == pair and 
+                        abs(float(trade_data.get('entry', 0)) - price) < 0.01):  # Match by pair and entry price
+                        await bot.check_single_trade_immediately(message_id, trade_data)
+                        new_trade_found = True
+                        await bot.debug_to_channel("INSTANT CHECK", 
+                            f"🚀 Instant price check completed for new {pair} signal", "🚀")
+                        break
+                
+                if not new_trade_found:
+                    await bot.debug_to_channel("INSTANT CHECK", 
+                        f"⚠️ New {pair} signal not found in active trades yet - normal for limit orders", "⚠️")
+                        
+            except Exception as e:
+                await bot.debug_to_channel("INSTANT CHECK ERROR", 
+                    f"❌ Error during instant check for {pair}: {str(e)}", "❌")
+                print(f"Instant check error: {e}")
         else:
             await interaction.response.send_message(
                 "❌ No valid channels found or no messages sent.",
@@ -6122,6 +6317,12 @@ class StatusSelectionDropdown(discord.ui.Select):
                 description="Mark TP3 as reached (ends trade)",
                 value="tp3_hit",
                 emoji="🚀"
+            ),
+            discord.SelectOption(
+                label="Breakeven Hit After TP2",
+                description="Mark trade as returned to breakeven after TP2 (ends trade)",
+                value="breakeven_after_tp2",
+                emoji="🟡"
             )
         ]
         
@@ -6253,6 +6454,36 @@ class StatusSelectionDropdown(discord.ui.Select):
                     title=f"✅ {tp_level.upper()} Hit Applied",
                     description=description,
                     color=discord.Color.green()
+                )
+            
+            elif status == "breakeven_after_tp2":
+                # Breakeven hit after TP2 - check if TP2 was actually hit first
+                if "tp2" not in current_tp_hits:
+                    embed = discord.Embed(
+                        title="⚠️ TP2 Not Hit Yet",
+                        description=f"**{pair} {action}** signal cannot hit breakeven after TP2 because **TP2** hasn't been hit yet.\n\n"
+                                   f"Current TP hits: {', '.join([tp.upper() for tp in current_tp_hits]) if current_tp_hits else 'None'}\n\n"
+                                   f"Please hit TP2 first, then use this option.",
+                        color=discord.Color.orange()
+                    )
+                    await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
+                    return
+                
+                # Mark the trade as closed due to breakeven after TP2
+                trade_data["status"] = "closed (breakeven after tp2 - manual override)"
+                await bot.remove_trade_from_db(message_id)
+                await bot.send_breakeven_notification(message_id, trade_data, offline_hit=False)
+                
+                # Refresh the view's active_trades data to reflect database changes
+                fresh_trades = await bot.get_active_trades_from_db()
+                self.view.active_trades = fresh_trades
+                
+                embed = discord.Embed(
+                    title="✅ Breakeven After TP2 Applied",
+                    description=f"🟡 **{pair} {action}** signal marked as returned to breakeven after TP2\n\n"
+                               f"📝 Trade removed from tracking\n"
+                               f"📢 Breakeven notification sent to community",
+                    color=discord.Color.gold()
                 )
             
             # Disable the view after successful operation
