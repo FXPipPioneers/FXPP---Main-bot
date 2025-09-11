@@ -2105,6 +2105,7 @@ class TradingBot(commands.Bot):
 
     async def update_trade_in_db(self, message_id: str, trade_data: dict):
         """Update an existing trade in database"""
+        
         # Always update in-memory first
         PRICE_TRACKING_CONFIG["active_trades"][message_id] = trade_data
 
@@ -2121,6 +2122,7 @@ class TradingBot(commands.Bot):
                     ','.join(trade_data.get("tp_hits", [])), trade_data.get("breakeven_active", False),
                     ','.join(trade_data.get("manual_overrides", []))
                     )
+                        
             except Exception as e:
                 # Send error details to debug channel instead of silently failing
                 debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
@@ -6686,9 +6688,15 @@ class StatusSelectionDropdown(discord.ui.Select):
                 add_tp_hit_and_override(tp_level)
                 trade_data["manual_overrides"] = manual_overrides
                 
+                
                 # Apply specific logic for each TP level
                 if tp_level == "tp1":
                     trade_data["status"] = "active (tp1 hit - manual override)"
+                    
+                    # 🔥 CRITICAL FIX: Sync working variables back to trade_data before saving
+                    trade_data["tp_hits"] = list(current_tp_hits)  # Sync from working variable
+                    trade_data["manual_overrides"] = list(manual_overrides)  # Sync latest overrides
+                    
                     await bot.update_trade_in_db(message_id, trade_data)
                     
                 elif tp_level == "tp2":
@@ -6703,6 +6711,11 @@ class StatusSelectionDropdown(discord.ui.Select):
                     # TP2 hit - activate breakeven
                     trade_data["breakeven_active"] = True
                     trade_data["status"] = "active (tp2 hit - manual override - breakeven active)"
+                    
+                    # 🔥 CRITICAL FIX: Sync working variables back to trade_data before saving
+                    trade_data["tp_hits"] = list(current_tp_hits)  # Sync from working variable
+                    trade_data["manual_overrides"] = list(manual_overrides)  # Sync latest overrides
+                    
                     await bot.update_trade_in_db(message_id, trade_data)
                     
                 elif tp_level == "tp3":
@@ -6722,6 +6735,11 @@ class StatusSelectionDropdown(discord.ui.Select):
                     
                     # TP3 hit - ends the trade
                     trade_data["status"] = "completed (tp3 hit - manual override)"
+                    
+                    # 🔥 CRITICAL FIX: Sync working variables back to trade_data before saving
+                    trade_data["tp_hits"] = list(current_tp_hits)  # Sync from working variable
+                    trade_data["manual_overrides"] = list(manual_overrides)  # Sync latest overrides
+                    
                     await bot.remove_trade_from_db(message_id)
                 
                 # Send TP notification for the selected level
