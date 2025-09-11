@@ -942,6 +942,37 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # 🛡️ INVITE ABUSE TRACKING: Track individual join events with account age analysis
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS invite_events (
+                        id SERIAL PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        member_id BIGINT NOT NULL,
+                        inviter_id BIGINT,
+                        invite_code VARCHAR(20),
+                        joined_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        account_created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        suspicious BOOLEAN DEFAULT FALSE,
+                        autorole_allowed BOOLEAN DEFAULT TRUE,
+                        reason TEXT,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        UNIQUE(guild_id, member_id)
+                    )
+                ''')
+
+                # 🛡️ INVITE ABUSE TRACKING: Track abuse statistics per inviter
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS inviter_abuse_stats (
+                        guild_id BIGINT NOT NULL,
+                        inviter_id BIGINT NOT NULL,
+                        suspicious_count INTEGER DEFAULT 0,
+                        banned_from_autorole BOOLEAN DEFAULT FALSE,
+                        first_suspicious_at TIMESTAMP WITH TIME ZONE,
+                        banned_at TIMESTAMP WITH TIME ZONE,
+                        PRIMARY KEY(guild_id, inviter_id)
+                    )
+                ''')
+
                 # Active trading signals table for 24/7 persistent tracking
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS active_trades (
@@ -1482,6 +1513,21 @@ class TradingBot(commands.Bot):
             if used_invite and used_invite.inviter and used_invite.inviter.bot:
                 await self.log_to_discord(
                     f"🤖 Ignoring {member.display_name} - joined via bot invite from {used_invite.inviter.display_name}"
+                )
+                return
+
+            # 🛡️ ANTI-ABUSE CHECK: Check if member is eligible for timedautorole
+            inviter_id = used_invite.inviter.id if used_invite and used_invite.inviter else None
+            invite_code = used_invite.code if used_invite else None
+            
+            eligibility = await self.check_timedautorole_eligibility(member, inviter_id, invite_code)
+            
+            if not eligibility["allowed"]:
+                await self.log_to_discord(
+                    f"🚫 **AUTOROLE BLOCKED** - {member.display_name}\n"
+                    f"📋 Reason: {eligibility['reason']}\n"
+                    f"👤 Inviter: <@{inviter_id}> {'(BANNED)' if eligibility['inviter_banned'] else ''}\n"
+                    f"⚠️ Suspicious: {'Yes' if eligibility['suspicious'] else 'No'}"
                 )
                 return
 
@@ -3390,6 +3436,146 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"❌ Error tracking member leave: {str(e)}")
+
+    async def check_timedautorole_eligibility(self, member: discord.Member, inviter_id: int = None, invite_code: str = None):
+        """
+        🛡️ CHECK TIMEDAUTOROLE ELIGIBILITY - Anti-abuse system for fake accounts
+        
+        Rules:
+        1. If inviter is owner or bot - ALWAYS ALLOW
+        2. If account created within 1 hour of joining - SUSPICIOUS
+        3. Allow first suspicious account per inviter
+        4. Block second+ suspicious accounts AND ban inviter permanently
+        5. All future invites from banned inviters are blocked
+        
+        Returns: {
+            "allowed": bool,
+            "reason": str,
+            "suspicious": bool,
+            "inviter_banned": bool
+        }
+        """
+        if not self.db_pool:
+            return {"allowed": True, "reason": "Database unavailable - allowing by default", "suspicious": False, "inviter_banned": False}
+        
+        try:
+            # 🚫 EXCLUSION: Owner and bots can invite anyone
+            if inviter_id and (is_bot_owner(inviter_id) or self.get_user(inviter_id).bot if self.get_user(inviter_id) else False):
+                return {"allowed": True, "reason": "Owner/bot invite - excluded from anti-abuse", "suspicious": False, "inviter_banned": False}
+            
+            # Skip if no inviter (vanity URL or unknown)
+            if not inviter_id:
+                return {"allowed": True, "reason": "Unknown inviter - allowing by default", "suspicious": False, "inviter_banned": False}
+            
+            # 🕐 SUSPICIOUS CHECK: Account created within 1 hour of joining?
+            join_time = member.joined_at
+            account_created_at = member.created_at
+            time_diff = join_time - account_created_at
+            is_suspicious = time_diff.total_seconds() <= 3600  # 1 hour = 3600 seconds
+            
+            async with self.db_pool.acquire() as conn:
+                # 🚫 CHECK: Is inviter already banned?
+                ban_record = await conn.fetchrow('''
+                    SELECT banned_from_autorole FROM inviter_abuse_stats 
+                    WHERE guild_id = $1 AND inviter_id = $2
+                ''', member.guild.id, inviter_id)
+                
+                if ban_record and ban_record['banned_from_autorole']:
+                    # Log the invite event for tracking
+                    await conn.execute('''
+                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                            inviter_id = EXCLUDED.inviter_id,
+                            invite_code = EXCLUDED.invite_code,
+                            suspicious = EXCLUDED.suspicious,
+                            autorole_allowed = EXCLUDED.autorole_allowed,
+                            reason = EXCLUDED.reason
+                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, is_suspicious, False, "Inviter banned from autorole")
+                    
+                    return {"allowed": False, "reason": "Inviter is banned from timedautorole", "suspicious": is_suspicious, "inviter_banned": True}
+                
+                # If not suspicious, allow and record
+                if not is_suspicious:
+                    await conn.execute('''
+                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                            inviter_id = EXCLUDED.inviter_id,
+                            invite_code = EXCLUDED.invite_code,
+                            suspicious = EXCLUDED.suspicious,
+                            autorole_allowed = EXCLUDED.autorole_allowed,
+                            reason = EXCLUDED.reason
+                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, False, True, "Normal account - allowed")
+                    
+                    return {"allowed": True, "reason": "Normal account age - allowed", "suspicious": False, "inviter_banned": False}
+                
+                # 🚨 SUSPICIOUS ACCOUNT - Check inviter's history
+                abuse_stats = await conn.fetchrow('''
+                    SELECT suspicious_count FROM inviter_abuse_stats 
+                    WHERE guild_id = $1 AND inviter_id = $2
+                ''', member.guild.id, inviter_id)
+                
+                current_suspicious_count = abuse_stats['suspicious_count'] if abuse_stats else 0
+                
+                if current_suspicious_count == 0:
+                    # ✅ FIRST SUSPICIOUS - Allow but track
+                    await conn.execute('''
+                        INSERT INTO inviter_abuse_stats (guild_id, inviter_id, suspicious_count, first_suspicious_at)
+                        VALUES ($1, $2, 1, NOW())
+                        ON CONFLICT (guild_id, inviter_id) DO UPDATE SET
+                            suspicious_count = 1,
+                            first_suspicious_at = NOW()
+                    ''', member.guild.id, inviter_id)
+                    
+                    await conn.execute('''
+                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                            inviter_id = EXCLUDED.inviter_id,
+                            invite_code = EXCLUDED.invite_code,
+                            suspicious = EXCLUDED.suspicious,
+                            autorole_allowed = EXCLUDED.autorole_allowed,
+                            reason = EXCLUDED.reason
+                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, True, True, "First suspicious account - allowed")
+                    
+                    return {"allowed": True, "reason": "First suspicious account from this inviter - allowed", "suspicious": True, "inviter_banned": False}
+                
+                else:
+                    # ❌ SECOND+ SUSPICIOUS - Ban inviter and block this account
+                    await conn.execute('''
+                        UPDATE inviter_abuse_stats 
+                        SET suspicious_count = suspicious_count + 1, 
+                            banned_from_autorole = TRUE, 
+                            banned_at = NOW()
+                        WHERE guild_id = $1 AND inviter_id = $2
+                    ''', member.guild.id, inviter_id)
+                    
+                    await conn.execute('''
+                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                            inviter_id = EXCLUDED.inviter_id,
+                            invite_code = EXCLUDED.invite_code,
+                            suspicious = EXCLUDED.suspicious,
+                            autorole_allowed = EXCLUDED.autorole_allowed,
+                            reason = EXCLUDED.reason
+                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, True, False, "Inviter abuse detected - banned")
+                    
+                    # 📢 Log the abuse detection
+                    await self.log_to_discord(
+                        f"🚨 **INVITE ABUSE DETECTED**\n"
+                        f"👤 Inviter <@{inviter_id}> banned from /timedautorole\n"
+                        f"📊 Suspicious invites: {current_suspicious_count + 1}\n"
+                        f"🚫 Account <@{member.id}> blocked from autorole"
+                    )
+                    
+                    return {"allowed": False, "reason": "Multiple suspicious invites detected - inviter banned", "suspicious": True, "inviter_banned": True}
+        
+        except Exception as e:
+            print(f"❌ Error checking timedautorole eligibility: {str(e)}")
+            # Default to allow to prevent blocking legitimate users due to bugs
+            return {"allowed": True, "reason": f"Error occurred - allowing by default: {str(e)}", "suspicious": False, "inviter_banned": False}
 
     def calculate_level(self, message_count):
         """Calculate user level based on message count"""
@@ -6427,12 +6613,23 @@ class StatusSelectionDropdown(discord.ui.Select):
         try:
             import asyncio  # Move import to top to prevent 'asyncio' not defined errors
             message_id = self.view.selected_trade
-            trade_data = self.view.active_trades[message_id]
-            pair = trade_data["pair"]
-            action = trade_data["action"]
             status = self.values[0]
             
-            # Get current TP hits before modification
+            # 🔥 DB-FIRST FIX: Always read current state from database, not cache
+            trade_data = await bot.get_trade_from_db(message_id)
+            if not trade_data:
+                embed = discord.Embed(
+                    title="❌ Trade Not Found",
+                    description="This trade is no longer in the database.",
+                    color=discord.Color.red()
+                )
+                await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
+                return
+                
+            pair = trade_data["pair"]
+            action = trade_data["action"]
+            
+            # Get current TP hits from DATABASE, not cache
             current_tp_hits = trade_data.get("tp_hits", [])
             
             # Process the manual status change
@@ -6530,7 +6727,7 @@ class StatusSelectionDropdown(discord.ui.Select):
                 # Send TP notification for the selected level
                 await bot.send_tp_notification(message_id, trade_data, tp_level, offline_hit=False, manual_override=True)
                 
-                # Refresh the view's active_trades data to reflect database changes
+                # 🔥 CRITICAL FIX: Refresh cache after database update (like SL hits do)
                 fresh_trades = await bot.get_active_trades_from_db()
                 self.view.active_trades = fresh_trades
                 
