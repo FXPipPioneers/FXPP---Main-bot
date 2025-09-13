@@ -166,6 +166,108 @@ async def test_bot_database_functions():
         print(f"❌ BOT DATABASE ERROR: {str(e)}")
         return False
 
+async def test_invite_abuse_system():
+    """Test invite anti-abuse system database functionality"""
+    
+    print("\n🛡️ Testing Invite Anti-Abuse System...")
+    print("=" * 50)
+    
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        print("❌ DATABASE_URL not found, skipping anti-abuse tests")
+        return False
+    
+    try:
+        conn = await asyncpg.connect(database_url)
+        
+        print("🔍 Testing invite_events table creation...")
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS invite_events (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                member_id BIGINT NOT NULL,
+                inviter_id BIGINT,
+                invite_code VARCHAR(20),
+                joined_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                account_created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                suspicious BOOLEAN DEFAULT FALSE,
+                autorole_allowed BOOLEAN DEFAULT TRUE,
+                reason TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(guild_id, member_id)
+            )
+        ''')
+        print("✅ invite_events table creation successful")
+        
+        print("🔍 Testing inviter_abuse_stats table creation...")
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS inviter_abuse_stats (
+                guild_id BIGINT NOT NULL,
+                inviter_id BIGINT NOT NULL,
+                suspicious_count INTEGER DEFAULT 0,
+                banned_from_autorole BOOLEAN DEFAULT FALSE,
+                first_suspicious_at TIMESTAMP WITH TIME ZONE,
+                banned_at TIMESTAMP WITH TIME ZONE,
+                PRIMARY KEY(guild_id, inviter_id)
+            )
+        ''')
+        print("✅ inviter_abuse_stats table creation successful")
+        
+        # Test eligibility check queries
+        print("🔍 Testing anti-abuse system queries...")
+        
+        # Test ban check query
+        ban_record = await conn.fetchrow('''
+            SELECT banned_from_autorole FROM inviter_abuse_stats 
+            WHERE guild_id = $1 AND inviter_id = $2
+        ''', 123456789, 987654321)
+        print(f"✅ Ban check query works: {ban_record}")
+        
+        # Test suspicious account logging
+        from datetime import datetime, timezone, timedelta
+        test_time = datetime.now(timezone.utc)
+        
+        await conn.execute('''
+            INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (guild_id, member_id) DO NOTHING
+        ''', 123456789, 111222333, 987654321, "testcode123", test_time, test_time - timedelta(minutes=30), True, False, "Test suspicious account")
+        print("✅ Suspicious account logging works")
+        
+        # Test abuse stats update
+        await conn.execute('''
+            INSERT INTO inviter_abuse_stats (guild_id, inviter_id, suspicious_count, banned_from_autorole, first_suspicious_at)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (guild_id, inviter_id) DO UPDATE SET
+            suspicious_count = inviter_abuse_stats.suspicious_count + 1,
+            banned_from_autorole = CASE WHEN inviter_abuse_stats.suspicious_count + 1 >= 2 THEN TRUE ELSE inviter_abuse_stats.banned_from_autorole END,
+            banned_at = CASE WHEN inviter_abuse_stats.suspicious_count + 1 >= 2 AND inviter_abuse_stats.banned_at IS NULL THEN $6 ELSE inviter_abuse_stats.banned_at END
+        ''', 123456789, 987654321, 1, False, test_time, test_time)
+        print("✅ Abuse statistics tracking works")
+        
+        # Verify tables exist
+        tables = await conn.fetch("""
+            SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name IN ('invite_events', 'inviter_abuse_stats')
+        """)
+        print(f"✅ Anti-abuse tables verified: {[row['table_name'] for row in tables]}")
+        
+        # Clean up test data
+        await conn.execute("DELETE FROM invite_events WHERE member_id = $1", 111222333)
+        await conn.execute("DELETE FROM inviter_abuse_stats WHERE inviter_id = $1", 987654321)
+        print("✅ Test data cleaned up")
+        
+        await conn.close()
+        
+        print("\n🎉 INVITE ANTI-ABUSE SYSTEM TEST PASSED!")
+        print("All database tables and queries work correctly!")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ ANTI-ABUSE SYSTEM ERROR: {str(e)}")
+        return False
+
 if __name__ == "__main__":
     print("Discord Trading Bot - Database Verification Tool")
     print("=" * 60)
@@ -178,11 +280,15 @@ if __name__ == "__main__":
             # Run bot-specific tests
             bot_test_passed = await test_bot_database_functions()
             
-            if bot_test_passed:
+            # Run invite anti-abuse system tests
+            abuse_test_passed = await test_invite_abuse_system()
+            
+            if bot_test_passed and abuse_test_passed:
                 print("\n🏆 COMPLETE SUCCESS!")
                 print("Your database is fully functional and ready for the Discord bot!")
+                print("All invite anti-abuse system tables and queries work perfectly!")
             else:
-                print("\n⚠️  Basic database works, but bot functions need attention")
+                print("\n⚠️  Some tests failed - check the output above")
         else:
             print("\n❌ Database connection failed - check your configuration")
     
