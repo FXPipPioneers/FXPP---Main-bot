@@ -35,11 +35,6 @@ A comprehensive Discord bot for trading signal distribution with automatic TP/SL
 - **Role History**: Complete audit trail of role assignments
 - **Anti-Duplicate System**: Prevents role farming by rejoining
 
-### 📱 Telegram Integration (Optional)
-- **Signal Forwarding**: Monitor Telegram groups for trading signals
-- **Intelligent Parsing**: Automatic signal recognition and formatting
-- **Multi-Platform**: Bridge between Telegram and Discord communities
-
 ## 🛠️ Trading Pair Support
 
 The bot supports 25+ trading pairs with automatic pip calculations:
