@@ -3439,16 +3439,25 @@ class TradingBot(commands.Bot):
         except Exception as e:
             print(f"❌ Error tracking member leave: {str(e)}")
 
+    def _is_owner_safe(self, inviter_id):
+        """Safe owner check that never raises exceptions"""
+        try:
+            if not inviter_id:
+                return False
+            # Convert to int if needed and check
+            inviter_id_int = int(inviter_id) if not isinstance(inviter_id, int) else inviter_id
+            return is_bot_owner(inviter_id_int)
+        except:
+            return False
+
     async def check_timedautorole_eligibility(self, member: discord.Member, inviter_id: int = None, invite_code: str = None):
         """
-        🛡️ CHECK TIMEDAUTOROLE ELIGIBILITY - Anti-abuse system for fake accounts
+        🛡️ CHECK TIMEDAUTOROLE ELIGIBILITY - Enhanced anti-abuse system for fake accounts
         
-        Rules:
-        1. If inviter is owner or bot - ALWAYS ALLOW
-        2. If account created within 1 hour of joining - SUSPICIOUS
-        3. Allow first suspicious account per inviter
-        4. Block second+ suspicious accounts AND ban inviter permanently
-        5. All future invites from banned inviters are blocked
+        NEW RULES (Enhanced Security):
+        1. If inviter is owner - ALWAYS ALLOW (even suspicious accounts)  
+        2. If account created within 1 hour of joining - BLOCK unless invited by owner
+        3. All future invites from banned inviters are blocked
         
         Returns: {
             "allowed": bool,
@@ -3457,23 +3466,61 @@ class TradingBot(commands.Bot):
             "inviter_banned": bool
         }
         """
-        if not self.db_pool:
-            return {"allowed": True, "reason": "Database unavailable - allowing by default", "suspicious": False, "inviter_banned": False}
+        # 🚨 BULLETPROOF: Single decision point with safe computations
+        is_owner_invite = False
+        is_suspicious = True  # Default to suspicious for maximum security
+        error_reason = None
         
         try:
-            # 🚫 EXCLUSION: Owner and bots can invite anyone
-            if inviter_id and (is_bot_owner(inviter_id) or self.get_user(inviter_id).bot if self.get_user(inviter_id) else False):
-                return {"allowed": True, "reason": "Owner/bot invite - excluded from anti-abuse", "suspicious": False, "inviter_banned": False}
+            # Safe owner check first
+            is_owner_invite = self._is_owner_safe(inviter_id)
             
-            # Skip if no inviter (vanity URL or unknown)
-            if not inviter_id:
-                return {"allowed": True, "reason": "Unknown inviter - allowing by default", "suspicious": False, "inviter_banned": False}
-            
-            # 🕐 SUSPICIOUS CHECK: Account created within 1 hour of joining?
-            join_time = member.joined_at
+            # Use timezone-aware UTC consistently
+            join_time = member.joined_at or discord.utils.utcnow()
             account_created_at = member.created_at
-            time_diff = join_time - account_created_at
-            is_suspicious = time_diff.total_seconds() <= 3600  # 1 hour = 3600 seconds
+            
+            if not account_created_at:
+                # STRICT FALLBACK: Block unless owner when age cannot be determined
+                is_suspicious = not is_owner_invite
+                if is_owner_invite:
+                    return {"allowed": True, "reason": "Owner invite - allowed despite unknown account age", "suspicious": False, "inviter_banned": False}
+                else:
+                    return {"allowed": False, "reason": "Account creation time unknown - blocked for security", "suspicious": True, "inviter_banned": False}
+            
+            # Ensure timezone-aware for safe calculation
+            if account_created_at.tzinfo is None:
+                account_created_at = account_created_at.replace(tzinfo=timezone.utc)
+            if join_time.tzinfo is None:
+                join_time = join_time.replace(tzinfo=timezone.utc)
+                
+            is_suspicious = (join_time - account_created_at).total_seconds() <= 3600
+            
+        except Exception as e:
+            error_reason = str(e)
+            print(f"❌ Error in security computation: {error_reason}")
+            # Keep defaults: is_owner_invite=False, is_suspicious=True for maximum security
+        
+        # 🛡️ SINGLE DECISION POINT: Block all suspicious accounts unless owner invited
+        if is_suspicious and not is_owner_invite:
+            reason = "Account created within 1 hour of joining - blocked for abuse prevention"
+            if error_reason:
+                reason += f" (computed despite error: {error_reason})"
+            return {"allowed": False, "reason": reason, "suspicious": True, "inviter_banned": False}
+        elif is_owner_invite:
+            reason = "Owner invite - excluded from anti-abuse"
+            if error_reason:
+                reason += f" (verified despite error: {error_reason})"
+            return {"allowed": True, "reason": reason, "suspicious": is_suspicious, "inviter_banned": False}
+        
+        # Non-suspicious, non-owner invite - proceed to database logic if available
+        if not self.db_pool:
+            return {"allowed": True, "reason": "Database unavailable - allowed (not suspicious)", "suspicious": False, "inviter_banned": False}
+        
+        # Database-dependent logic for non-suspicious accounts
+        try:
+            # Handle unknown inviter for non-suspicious accounts
+            if not inviter_id:
+                return {"allowed": True, "reason": "Unknown inviter but normal account age - allowed", "suspicious": False, "inviter_banned": False}
             
             async with self.db_pool.acquire() as conn:
                 # 🚫 CHECK: Is inviter already banned?
@@ -3497,87 +3544,26 @@ class TradingBot(commands.Bot):
                     
                     return {"allowed": False, "reason": "Inviter is banned from timedautorole", "suspicious": is_suspicious, "inviter_banned": True}
                 
-                # If not suspicious, allow and record
-                if not is_suspicious:
-                    await conn.execute('''
-                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
-                            inviter_id = EXCLUDED.inviter_id,
-                            invite_code = EXCLUDED.invite_code,
-                            suspicious = EXCLUDED.suspicious,
-                            autorole_allowed = EXCLUDED.autorole_allowed,
-                            reason = EXCLUDED.reason
-                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, False, True, "Normal account - allowed")
-                    
-                    return {"allowed": True, "reason": "Normal account age - allowed", "suspicious": False, "inviter_banned": False}
+                # This code only runs for non-suspicious accounts (already filtered above)
+                await conn.execute('''
+                    INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    ON CONFLICT (guild_id, member_id) DO UPDATE SET
+                        inviter_id = EXCLUDED.inviter_id,
+                        invite_code = EXCLUDED.invite_code,
+                        suspicious = EXCLUDED.suspicious,
+                        autorole_allowed = EXCLUDED.autorole_allowed,
+                        reason = EXCLUDED.reason
+                ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, False, True, "Normal account - allowed")
                 
-                # 🚨 SUSPICIOUS ACCOUNT - Check inviter's history
-                abuse_stats = await conn.fetchrow('''
-                    SELECT suspicious_count FROM inviter_abuse_stats 
-                    WHERE guild_id = $1 AND inviter_id = $2
-                ''', member.guild.id, inviter_id)
-                
-                current_suspicious_count = abuse_stats['suspicious_count'] if abuse_stats else 0
-                
-                if current_suspicious_count == 0:
-                    # ✅ FIRST SUSPICIOUS - Allow but track
-                    await conn.execute('''
-                        INSERT INTO inviter_abuse_stats (guild_id, inviter_id, suspicious_count, first_suspicious_at)
-                        VALUES ($1, $2, 1, NOW())
-                        ON CONFLICT (guild_id, inviter_id) DO UPDATE SET
-                            suspicious_count = 1,
-                            first_suspicious_at = NOW()
-                    ''', member.guild.id, inviter_id)
-                    
-                    await conn.execute('''
-                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
-                            inviter_id = EXCLUDED.inviter_id,
-                            invite_code = EXCLUDED.invite_code,
-                            suspicious = EXCLUDED.suspicious,
-                            autorole_allowed = EXCLUDED.autorole_allowed,
-                            reason = EXCLUDED.reason
-                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, True, True, "First suspicious account - allowed")
-                    
-                    return {"allowed": True, "reason": "First suspicious account from this inviter - allowed", "suspicious": True, "inviter_banned": False}
-                
-                else:
-                    # ❌ SECOND+ SUSPICIOUS - Ban inviter and block this account
-                    await conn.execute('''
-                        UPDATE inviter_abuse_stats 
-                        SET suspicious_count = suspicious_count + 1, 
-                            banned_from_autorole = TRUE, 
-                            banned_at = NOW()
-                        WHERE guild_id = $1 AND inviter_id = $2
-                    ''', member.guild.id, inviter_id)
-                    
-                    await conn.execute('''
-                        INSERT INTO invite_events (guild_id, member_id, inviter_id, invite_code, joined_at, account_created_at, suspicious, autorole_allowed, reason)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                        ON CONFLICT (guild_id, member_id) DO UPDATE SET
-                            inviter_id = EXCLUDED.inviter_id,
-                            invite_code = EXCLUDED.invite_code,
-                            suspicious = EXCLUDED.suspicious,
-                            autorole_allowed = EXCLUDED.autorole_allowed,
-                            reason = EXCLUDED.reason
-                    ''', member.guild.id, member.id, inviter_id, invite_code, join_time, account_created_at, True, False, "Inviter abuse detected - banned")
-                    
-                    # 📢 Log the abuse detection
-                    await self.log_to_discord(
-                        f"🚨 **INVITE ABUSE DETECTED**\n"
-                        f"👤 Inviter <@{inviter_id}> banned from /timedautorole\n"
-                        f"📊 Suspicious invites: {current_suspicious_count + 1}\n"
-                        f"🚫 Account <@{member.id}> blocked from autorole"
-                    )
-                    
-                    return {"allowed": False, "reason": "Multiple suspicious invites detected - inviter banned", "suspicious": True, "inviter_banned": True}
+                return {"allowed": True, "reason": "Normal account age - allowed", "suspicious": False, "inviter_banned": False}
         
         except Exception as e:
             print(f"❌ Error checking timedautorole eligibility: {str(e)}")
-            # Default to allow to prevent blocking legitimate users due to bugs
-            return {"allowed": True, "reason": f"Error occurred - allowing by default: {str(e)}", "suspicious": False, "inviter_banned": False}
+            
+            # 🚨 EXCEPTION-SAFE: Database errors for non-suspicious accounts
+            print(f"❌ Database error in timedautorole check: {str(e)}")
+            return {"allowed": True, "reason": f"Database error but account not suspicious - allowing: {str(e)}", "suspicious": False, "inviter_banned": False}
 
     def calculate_level(self, message_count):
         """Calculate user level based on message count"""
