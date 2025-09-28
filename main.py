@@ -622,7 +622,7 @@ class TradingBot(commands.Bot):
 
                     # Check if message still exists (cleanup deleted signals)
                     if not await self.check_message_still_exists(message_id, trade_data):
-                        await self.remove_trade_from_db(message_id)
+                        await self.remove_trade_from_db(message_id, "message_deleted")
                         continue
 
                     action = trade_data["action"]
@@ -999,6 +999,37 @@ class TradingBot(commands.Bot):
                         entry_type VARCHAR(30),
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+                
+                # Historical/completed trades table for date range analysis
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS completed_trades (
+                        message_id VARCHAR(20) PRIMARY KEY,
+                        channel_id BIGINT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        pair VARCHAR(20) NOT NULL,
+                        action VARCHAR(10) NOT NULL,
+                        entry_price DECIMAL(30,15) NOT NULL,
+                        tp1_price DECIMAL(30,15) NOT NULL,
+                        tp2_price DECIMAL(30,15) NOT NULL,
+                        tp3_price DECIMAL(30,15) NOT NULL,
+                        sl_price DECIMAL(30,15) NOT NULL,
+                        discord_entry DECIMAL(30,15),
+                        discord_tp1 DECIMAL(30,15),
+                        discord_tp2 DECIMAL(30,15),
+                        discord_tp3 DECIMAL(30,15),
+                        discord_sl DECIMAL(30,15),
+                        live_entry DECIMAL(30,15),
+                        assigned_api VARCHAR(30) DEFAULT 'currencybeacon',
+                        final_status VARCHAR(100) NOT NULL,
+                        tp_hits TEXT DEFAULT '',
+                        breakeven_active BOOLEAN DEFAULT FALSE,
+                        entry_type VARCHAR(30),
+                        manual_overrides TEXT DEFAULT '',
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        completed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        completion_reason VARCHAR(50) NOT NULL
                     )
                 ''')
                 
@@ -2157,23 +2188,54 @@ class TradingBot(commands.Bot):
                     await debug_channel.send(f"❌ Database UPDATE failed for message_id {message_id}: {str(e)}")
                 print(f"❌ Database update error: {str(e)}")
 
-    async def remove_trade_from_db(self, message_id: str):
-        """Remove completed trade from database"""
-        # Always remove from memory first
-        if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
-            del PRICE_TRACKING_CONFIG["active_trades"][message_id]
-
-        # Also remove from database if available
+    async def remove_trade_from_db(self, message_id: str, completion_reason: str = "unknown"):
+        """Remove completed trade from database and save to historical table"""
+        # First, save to historical table before removing
         if self.db_pool:
             try:
                 async with self.db_pool.acquire() as conn:
+                    # Get the trade data before removing it
+                    trade_row = await conn.fetchrow('SELECT * FROM active_trades WHERE message_id = $1', message_id)
+                    
+                    if trade_row:
+                        # Save to completed_trades table for historical tracking
+                        await conn.execute('''
+                            INSERT INTO completed_trades (
+                                message_id, channel_id, guild_id, pair, action,
+                                entry_price, tp1_price, tp2_price, tp3_price, sl_price,
+                                discord_entry, discord_tp1, discord_tp2, discord_tp3, discord_sl,
+                                live_entry, assigned_api, final_status, tp_hits, breakeven_active, 
+                                entry_type, manual_overrides, created_at, completion_reason
+                            ) VALUES (
+                                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 
+                                $16, $17, $18, $19, $20, $21, $22, $23, $24
+                            )
+                        ''', 
+                        trade_row['message_id'], trade_row['channel_id'], trade_row['guild_id'],
+                        trade_row['pair'], trade_row['action'], 
+                        trade_row['entry_price'], trade_row['tp1_price'], trade_row['tp2_price'], 
+                        trade_row['tp3_price'], trade_row['sl_price'],
+                        trade_row['discord_entry'], trade_row['discord_tp1'], trade_row['discord_tp2'], 
+                        trade_row['discord_tp3'], trade_row['discord_sl'],
+                        trade_row['live_entry'], trade_row['assigned_api'], trade_row['status'], 
+                        trade_row['tp_hits'], trade_row['breakeven_active'], 
+                        trade_row['entry_type'], trade_row.get('manual_overrides', ''), 
+                        trade_row['created_at'], completion_reason
+                        )
+                    
+                    # Now remove from active_trades
                     await conn.execute('DELETE FROM active_trades WHERE message_id = $1', message_id)
+                    
             except Exception as e:
                 # Send error details to debug channel instead of silently failing
                 debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
                 if debug_channel:
-                    await debug_channel.send(f"❌ Database DELETE failed for message_id {message_id}: {str(e)}")
-                print(f"❌ Database delete error: {str(e)}")
+                    await debug_channel.send(f"❌ Database DELETE/ARCHIVE failed for message_id {message_id}: {str(e)}")
+                print(f"❌ Database delete/archive error: {str(e)}")
+
+        # Always remove from memory after database operations
+        if message_id in PRICE_TRACKING_CONFIG["active_trades"]:
+            del PRICE_TRACKING_CONFIG["active_trades"][message_id]
 
     async def get_active_trades_from_db(self):
         """Get current active trades from database (used by commands)"""
@@ -2745,7 +2807,7 @@ class TradingBot(commands.Bot):
             # First check if the original message still exists
             if not await self.check_message_still_exists(message_id, trade_data):
                 # Message was deleted, remove from tracking
-                await self.remove_trade_from_db(message_id)
+                await self.remove_trade_from_db(message_id, "message_deleted")
                 return True  # Return True to indicate this trade should be removed from active tracking
                 
             # Verify trade data consistency between memory and database to prevent missed hits
@@ -2898,7 +2960,7 @@ class TradingBot(commands.Bot):
             elif tp_level == "tp3":
                 trade_data["status"] = "completed (tp3 hit)"
                 # Remove from active trades after TP3 (database and memory)
-                await self.remove_trade_from_db(message_id)
+                await self.remove_trade_from_db(message_id, "tp3_hit")
 
             # Send notification
             await self.send_tp_notification(message_id, trade_data, tp_level, offline_hit)
@@ -2919,7 +2981,7 @@ class TradingBot(commands.Bot):
             trade_data["status"] = "closed (sl hit)"
 
             # Remove from active trades (database and memory)
-            await self.remove_trade_from_db(message_id)
+            await self.remove_trade_from_db(message_id, "sl_hit")
 
             # Send notification
             await self.send_sl_notification(message_id, trade_data, offline_hit)
@@ -2933,7 +2995,7 @@ class TradingBot(commands.Bot):
             trade_data["status"] = "closed (breakeven after tp2)"
 
             # Remove from active trades (database and memory)
-            await self.remove_trade_from_db(message_id)
+            await self.remove_trade_from_db(message_id, "breakeven_hit")
 
             # Send breakeven notification
             await self.send_breakeven_notification(message_id, trade_data, offline_hit)
@@ -3493,7 +3555,7 @@ class TradingBot(commands.Bot):
             if join_time.tzinfo is None:
                 join_time = join_time.replace(tzinfo=timezone.utc)
                 
-            is_suspicious = (join_time - account_created_at).total_seconds() <= 3600
+            is_suspicious = (join_time - account_created_at).total_seconds() <= 86400
             
         except Exception as e:
             error_reason = str(e)
@@ -3502,7 +3564,7 @@ class TradingBot(commands.Bot):
         
         # 🛡️ SINGLE DECISION POINT: Block all suspicious accounts unless owner invited
         if is_suspicious and not is_owner_invite:
-            reason = "Account created within 1 hour of joining - blocked for abuse prevention"
+            reason = "Account created within 24 hours of joining - blocked for abuse prevention"
             if error_reason:
                 reason += f" (computed despite error: {error_reason})"
             return {"allowed": False, "reason": reason, "suspicious": True, "inviter_banned": False}
@@ -6631,7 +6693,7 @@ class StatusSelectionDropdown(discord.ui.Select):
                     manual_overrides.append("sl")
                 trade_data["manual_overrides"] = manual_overrides
                 
-                await bot.remove_trade_from_db(message_id)
+                await bot.remove_trade_from_db(message_id, "manual_sl_hit")
                 await bot.send_sl_notification(message_id, trade_data, offline_hit=False, manual_override=True)
                 
                 # Refresh the view's active_trades data to reflect database changes
@@ -6678,11 +6740,6 @@ class StatusSelectionDropdown(discord.ui.Select):
                 # Apply specific logic for each TP level
                 if tp_level == "tp1":
                     trade_data["status"] = "active (tp1 hit - manual override)"
-                    
-                    # 🔥 CRITICAL FIX: Sync working variables back to trade_data before saving
-                    trade_data["tp_hits"] = list(current_tp_hits)  # Sync from working variable
-                    trade_data["manual_overrides"] = list(manual_overrides)  # Sync latest overrides
-                    
                     await bot.update_trade_in_db(message_id, trade_data)
                     
                 elif tp_level == "tp2":
@@ -6697,11 +6754,6 @@ class StatusSelectionDropdown(discord.ui.Select):
                     # TP2 hit - activate breakeven
                     trade_data["breakeven_active"] = True
                     trade_data["status"] = "active (tp2 hit - manual override - breakeven active)"
-                    
-                    # 🔥 CRITICAL FIX: Sync working variables back to trade_data before saving
-                    trade_data["tp_hits"] = list(current_tp_hits)  # Sync from working variable
-                    trade_data["manual_overrides"] = list(manual_overrides)  # Sync latest overrides
-                    
                     await bot.update_trade_in_db(message_id, trade_data)
                     
                 elif tp_level == "tp3":
@@ -6721,12 +6773,7 @@ class StatusSelectionDropdown(discord.ui.Select):
                     
                     # TP3 hit - ends the trade
                     trade_data["status"] = "completed (tp3 hit - manual override)"
-                    
-                    # 🔥 CRITICAL FIX: Sync working variables back to trade_data before saving
-                    trade_data["tp_hits"] = list(current_tp_hits)  # Sync from working variable
-                    trade_data["manual_overrides"] = list(manual_overrides)  # Sync latest overrides
-                    
-                    await bot.remove_trade_from_db(message_id)
+                    await bot.remove_trade_from_db(message_id, "manual_tp3_hit")
                 
                 # Send TP notification for the selected level
                 await bot.send_tp_notification(message_id, trade_data, tp_level, offline_hit=False, manual_override=True)
@@ -6787,7 +6834,7 @@ class StatusSelectionDropdown(discord.ui.Select):
                     manual_overrides.append("breakeven")
                 trade_data["manual_overrides"] = manual_overrides
                 
-                await bot.remove_trade_from_db(message_id)
+                await bot.remove_trade_from_db(message_id, "manual_breakeven_hit")
                 await bot.send_breakeven_notification(message_id, trade_data, offline_hit=False)
                 
                 # Refresh the view's active_trades data to reflect database changes
@@ -6858,6 +6905,195 @@ async def trade_override_command(interaction: discord.Interaction):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
         print(f"Trade override loading error: {e}")
+
+# Trade Statistics Command for Date Range Analysis
+@bot.tree.command(name="tradestats", description="[OWNER ONLY] Analyze trade performance statistics within a date range")
+@app_commands.describe(
+    start_date="Start date (format: YYYY-MM-DD, e.g., 2025-09-01)",
+    end_date="End date (format: YYYY-MM-DD, e.g., 2025-09-30)"
+)
+async def trade_stats_command(interaction: discord.Interaction, start_date: str, end_date: str):
+    """Analyze trade performance statistics within a specified date range"""
+    if not await owner_check(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        # Parse and validate dates
+        from datetime import datetime
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        
+        if start_dt > end_dt:
+            embed = discord.Embed(
+                title="❌ Invalid Date Range",
+                description="Start date must be before or equal to end date.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if not bot.db_pool:
+            embed = discord.Embed(
+                title="❌ Database Not Available", 
+                description="Trade statistics require database access.",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        async with bot.db_pool.acquire() as conn:
+            # Query completed trades within date range
+            completed_trades = await conn.fetch('''
+                SELECT * FROM completed_trades 
+                WHERE created_at >= $1 AND created_at <= $2 + INTERVAL '1 day'
+                ORDER BY created_at DESC
+            ''', start_dt, end_dt)
+            
+            # Query currently active trades that were created in date range
+            active_trades = await conn.fetch('''
+                SELECT * FROM active_trades 
+                WHERE created_at >= $1 AND created_at <= $2 + INTERVAL '1 day'
+                ORDER BY created_at DESC
+            ''', start_dt, end_dt)
+
+        # Calculate statistics
+        total_sent = len(completed_trades) + len(active_trades)
+        total_completed = len(completed_trades)
+        total_active = len(active_trades)
+        
+        # Count completion types
+        sl_hits = 0
+        tp1_hits = 0
+        tp2_hits = 0
+        tp3_hits = 0
+        breakeven_hits = 0
+        manual_overrides = 0
+        message_deleted = 0
+        
+        for trade in completed_trades:
+            completion_reason = trade['completion_reason']
+            
+            # Safely handle tp_hits - could be string, list, or None
+            tp_hits_raw = trade['tp_hits']
+            if isinstance(tp_hits_raw, str):
+                tp_hits_list = [tp.strip() for tp in tp_hits_raw.split(',') if tp.strip()] if tp_hits_raw else []
+            elif isinstance(tp_hits_raw, list):
+                tp_hits_list = [str(tp).strip() for tp in tp_hits_raw if str(tp).strip()]
+            else:
+                tp_hits_list = []
+            
+            # Safely handle manual_overrides - could be string, list, or None  
+            manual_overrides_raw = trade['manual_overrides']
+            if isinstance(manual_overrides_raw, str):
+                manual_overrides_list = [mo.strip() for mo in manual_overrides_raw.split(',') if mo.strip()] if manual_overrides_raw else []
+            elif isinstance(manual_overrides_raw, list):
+                manual_overrides_list = [str(mo).strip() for mo in manual_overrides_raw if str(mo).strip()]
+            else:
+                manual_overrides_list = []
+            
+            # Count by completion reason
+            if 'sl_hit' in completion_reason:
+                sl_hits += 1
+            elif 'tp3_hit' in completion_reason:
+                tp3_hits += 1
+            elif 'breakeven_hit' in completion_reason:
+                breakeven_hits += 1
+            elif 'message_deleted' in completion_reason:
+                message_deleted += 1
+            
+            # Count TP hits (including those that eventually hit TP3 or other endings)
+            if 'tp1' in tp_hits_list:
+                tp1_hits += 1
+            if 'tp2' in tp_hits_list:
+                tp2_hits += 1
+            if 'tp3' in tp_hits_list:
+                tp3_hits += 1
+                
+            # Count manual overrides
+            if manual_overrides_list and any(override.strip() for override in manual_overrides_list):
+                manual_overrides += 1
+
+        # Create embed with statistics
+        embed = discord.Embed(
+            title="📊 Trade Performance Statistics",
+            description=f"**Date Range:** {start_date} to {end_date}",
+            color=discord.Color.blue()
+        )
+        
+        # Overall statistics
+        embed.add_field(
+            name="📈 Trade Summary",
+            value=f"**Total Signals Sent:** {total_sent}\n"
+                  f"**Completed Trades:** {total_completed}\n"
+                  f"**Still Active:** {total_active}",
+            inline=True
+        )
+        
+        # Completion breakdown
+        completion_rate = (total_completed / total_sent * 100) if total_sent > 0 else 0
+        embed.add_field(
+            name="⚙️ Completion Status",
+            value=f"**Completion Rate:** {completion_rate:.1f}%\n"
+                  f"**SL Hits:** {sl_hits}\n"
+                  f"**TP3 Hits:** {tp3_hits}\n"
+                  f"**Breakeven Hits:** {breakeven_hits}\n"
+                  f"**Deleted Messages:** {message_deleted}",
+            inline=True
+        )
+        
+        # TP hit statistics
+        embed.add_field(
+            name="🎯 Take Profit Statistics",
+            value=f"**TP1 Hits:** {tp1_hits}\n"
+                  f"**TP2 Hits:** {tp2_hits}\n"
+                  f"**TP3 Hits:** {tp3_hits}\n"
+                  f"**Manual Overrides:** {manual_overrides}",
+            inline=True
+        )
+        
+        # Performance metrics
+        if total_completed > 0:
+            tp3_rate = (tp3_hits / total_completed * 100)
+            sl_rate = (sl_hits / total_completed * 100)
+            
+            embed.add_field(
+                name="📊 Success Metrics",
+                value=f"**TP3 Success Rate:** {tp3_rate:.1f}%\n"
+                      f"**SL Hit Rate:** {sl_rate:.1f}%\n"
+                      f"**Breakeven Rate:** {(breakeven_hits / total_completed * 100):.1f}%",
+                inline=False
+            )
+        
+        # Active trades note
+        if total_active > 0:
+            embed.add_field(
+                name="⏳ Active Trades Note",
+                value=f"There are **{total_active}** trades from this date range still running. "
+                      f"Use `/activetrades view` to see current status.",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Manual overrides via /tradeoverride are included in statistics")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    except ValueError:
+        embed = discord.Embed(
+            title="❌ Invalid Date Format",
+            description="Please use YYYY-MM-DD format for dates (e.g., 2025-09-01)",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error Analyzing Trades",
+            description=f"Failed to analyze trade statistics: {str(e)}",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        print(f"Trade stats error: {e}")
 
 # SL-TP Scraper command removed as requested by user
 # @bot.tree.command(name="sl-tpscraper", description="[OWNER ONLY] Analyze trade signals and performance within a date range")
