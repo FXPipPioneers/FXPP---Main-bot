@@ -6921,7 +6921,7 @@ async def trade_stats_command(interaction: discord.Interaction, start_date: str,
 
     try:
         # Parse and validate dates
-        from datetime import datetime
+        from datetime import datetime, timedelta
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         
@@ -6933,6 +6933,9 @@ async def trade_stats_command(interaction: discord.Interaction, start_date: str,
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
+
+        # Add one day to end_dt to include the entire end date
+        end_dt_plus_one = end_dt + timedelta(days=1)
 
         if not bot.db_pool:
             embed = discord.Embed(
@@ -6947,16 +6950,16 @@ async def trade_stats_command(interaction: discord.Interaction, start_date: str,
             # Query completed trades within date range
             completed_trades = await conn.fetch('''
                 SELECT * FROM completed_trades 
-                WHERE created_at >= $1 AND created_at <= $2 + INTERVAL '1 day'
+                WHERE created_at >= $1 AND created_at < $2
                 ORDER BY created_at DESC
-            ''', start_dt, end_dt)
+            ''', start_dt, end_dt_plus_one)
             
             # Query currently active trades that were created in date range
             active_trades = await conn.fetch('''
                 SELECT * FROM active_trades 
-                WHERE created_at >= $1 AND created_at <= $2 + INTERVAL '1 day'
+                WHERE created_at >= $1 AND created_at < $2
                 ORDER BY created_at DESC
-            ''', start_dt, end_dt)
+            ''', start_dt, end_dt_plus_one)
 
         # Calculate statistics
         total_sent = len(completed_trades) + len(active_trades)
