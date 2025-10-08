@@ -6647,6 +6647,12 @@ class StatusSelectionDropdown(discord.ui.Select):
                 description="Mark trade as returned to breakeven after TP2 (ends trade)",
                 value="breakeven_after_tp2",
                 emoji="🟡"
+            ),
+            discord.SelectOption(
+                label="End Tracking",
+                description="Stop tracking this trade without sending notifications",
+                value="end_tracking",
+                emoji="⏹️"
             )
         ]
         
@@ -6813,18 +6819,6 @@ class StatusSelectionDropdown(discord.ui.Select):
                 )
             
             elif status == "breakeven_after_tp2":
-                # Breakeven hit after TP2 - check if TP2 was actually hit first
-                if "tp2" not in current_tp_hits:
-                    embed = discord.Embed(
-                        title="⚠️ TP2 Not Hit Yet",
-                        description=f"**{pair} {action}** signal cannot hit breakeven after TP2 because **TP2** hasn't been hit yet.\n\n"
-                                   f"Current TP hits: {', '.join([tp.upper() for tp in current_tp_hits]) if current_tp_hits else 'None'}\n\n"
-                                   f"Please hit TP2 first, then use this option.",
-                        color=discord.Color.orange()
-                    )
-                    await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
-                    return
-                
                 # Mark the trade as closed due to breakeven after TP2
                 trade_data["status"] = "closed (breakeven after tp2 - manual override)"
                 
@@ -6847,6 +6841,25 @@ class StatusSelectionDropdown(discord.ui.Select):
                                f"📝 Trade removed from tracking\n"
                                f"📢 Breakeven notification sent to community",
                     color=discord.Color.gold()
+                )
+            
+            elif status == "end_tracking":
+                # End tracking without sending any notifications
+                trade_data["status"] = "closed (ended by manual override)"
+                
+                # Remove trade from database and in-memory storage
+                await bot.remove_trade_from_db(message_id, "manual_end_tracking")
+                
+                # Refresh the view's active_trades data to reflect database changes
+                fresh_trades = await bot.get_active_trades_from_db()
+                self.view.active_trades = fresh_trades
+                
+                embed = discord.Embed(
+                    title="✅ Tracking Ended",
+                    description=f"⏹️ **{pair} {action}** signal tracking has been stopped\n\n"
+                               f"📝 Trade removed from tracking\n"
+                               f"🔕 No notifications sent to community",
+                    color=discord.Color.blue()
                 )
             
             # Disable the view after successful operation
