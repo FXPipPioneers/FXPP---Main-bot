@@ -148,8 +148,8 @@ LEVEL_SYSTEM = {
     "user_data":
     {},  # user_id: {"message_count": int, "current_level": int, "guild_id": guild_id}
     "level_requirements": {
-        1: 10,  # Level 1: 10 messages (very easy start)
-        2: 25,  # Level 2: 25 messages (easy)
+        1: 5,  # Level 1: 5 messages (very easy start)
+        2: 20,  # Level 2: 20 messages (easy)
         3: 50,  # Level 3: 50 messages (moderate)
         4: 100,  # Level 4: 100 messages (decent activity)
         5: 200,  # Level 5: 200 messages (good activity)
@@ -5854,8 +5854,7 @@ async def level_command(interaction: discord.Interaction,
 
     if user_id not in LEVEL_SYSTEM["user_data"]:
         await interaction.response.send_message(
-            f"📊 **{target_user.display_name}** has not sent any messages yet.\n"
-            + "Start chatting to begin leveling up!",
+            f"**{target_user.display_name}** hasn't sent any messages yet. Start chatting to level up!",
             ephemeral=True)
         return
 
@@ -5867,61 +5866,44 @@ async def level_command(interaction: discord.Interaction,
     next_level = current_level + 1
     if next_level <= 8:  # Max level is 8
         messages_needed = LEVEL_SYSTEM["level_requirements"][next_level]
-        progress = message_count
         remaining = messages_needed - message_count
-        progress_percentage = (progress / messages_needed) * 100
+        progress_percentage = (message_count / messages_needed) * 100
     else:
         # Max level reached
         messages_needed = None
         remaining = 0
         progress_percentage = 100
 
-    # Create level embed
-    embed = discord.Embed(
-        title=f"📊 Level Information for {target_user.display_name}",
-        color=discord.Color.gold())
+    # Create simplified embed
+    embed = discord.Embed(color=discord.Color.gold())
 
+    # Main status line
     if current_level > 0:
-        embed.add_field(name="🏆 Current Level",
-                        value=f"**Level {current_level}**",
-                        inline=True)
+        status_line = f"🏆 **Level {current_level}** • {message_count:,} messages sent"
     else:
-        embed.add_field(name="🏆 Current Level",
-                        value="**Not yet achieved**",
-                        inline=True)
+        status_line = f"📊 **Unranked** • {message_count:,} messages sent"
+    
+    embed.add_field(name="Your Status", value=status_line, inline=False)
 
-    embed.add_field(name="💬 Total Messages",
-                    value=f"**{message_count:,}**",
-                    inline=True)
-
+    # Progress to next level
     if next_level <= 8:
-        embed.add_field(name="🎯 Next Level Progress",
-                        value=f"**{progress}/{messages_needed}** messages\n" +
-                        f"**{remaining:,}** messages to Level {next_level}\n" +
-                        f"**{progress_percentage:.1f}%** complete",
-                        inline=False)
+        # Create progress bar
+        bar_length = 10
+        filled = int((progress_percentage / 100) * bar_length)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        
+        progress_text = (
+            f"{bar} **{progress_percentage:.0f}%**\n"
+            f"**{remaining:,}** more messages to reach **Level {next_level}**"
+        )
+        embed.add_field(name="Next Level", value=progress_text, inline=False)
     else:
         embed.add_field(
-            name="🎉 Achievement",
-            value=
-            "**MAX LEVEL REACHED!**\nCongratulations on reaching Level 8!",
+            name="🎉 Max Level Reached!",
+            value="You've achieved the highest level!",
             inline=False)
 
-    # Add level requirements info
-    requirements_text = ""
-    for level, required in LEVEL_SYSTEM["level_requirements"].items():
-        if level <= current_level:
-            requirements_text += f"✅ Level {level}: {required:,} messages\n"
-        elif level == current_level + 1:
-            requirements_text += f"🎯 Level {level}: {required:,} messages\n"
-        else:
-            requirements_text += f"🔒 Level {level}: {required:,} messages\n"
-
-    embed.add_field(name="📋 Level Requirements",
-                    value=requirements_text,
-                    inline=False)
-
-    embed.set_footer(text="Keep chatting in any text channel to level up!")
+    embed.set_footer(text="Keep chatting to level up!")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
