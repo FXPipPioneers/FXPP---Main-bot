@@ -707,7 +707,7 @@ class TradingBot(commands.Bot):
             self._last_price_check_time = datetime.now()
         
         time_since_last = (datetime.now() - self._last_price_check_time).total_seconds()
-        time_until_next = max(0, 240 - time_since_last)  # 240 seconds = 4 minutes
+        time_until_next = max(0, 480 - time_since_last)  # 480 seconds = 8 minutes
         
         if time_until_next <= 0:
             return "Due now"
@@ -720,7 +720,7 @@ class TradingBot(commands.Bot):
         else:
             return f"{seconds}s"
 
-    @tasks.loop(seconds=240)  # 4 minute interval - optimized for 15-minute API refresh cycles
+    @tasks.loop(seconds=480)  # 8 minute interval - optimized for 15-minute API refresh cycles
     async def price_tracking_task(self):
         """Background task to monitor live prices for active trades - 24/7 monitoring with upgraded API limits"""
         # Record the time of this price check
@@ -1333,10 +1333,10 @@ class TradingBot(commands.Bot):
         # Start the price tracking task
         if not self.price_tracking_task.is_running():
             self.price_tracking_task.start()
-            print("🔄 Price tracking task started - 4 minute intervals (240s)")
+            print("🔄 Price tracking task started - 8 minute intervals (480s)")
             debug_channel = self.get_channel(DEBUG_CHANNEL_ID)
             if debug_channel:
-                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 4 minutes (240s) for thorough TP/SL detection")
+                await debug_channel.send("🚀 **Price Tracking Started** - Monitoring every 8 minutes (480s) for thorough TP/SL detection")
 
         # Check for TP/SL hits that occurred while offline
         await self.check_offline_tp_sl_hits()
@@ -5887,148 +5887,6 @@ async def dm_status_command(interaction: discord.Interaction, message_type: str 
         await interaction.followup.send(f"❌ Error checking DM status: {str(e)}", ephemeral=True)
 
 
-# ===== INVITE TRACKING COMMANDS =====
-@bot.tree.command(
-    name="invitetracking",
-    description="Manage server invite tracking and statistics"
-)
-@app_commands.describe(
-    action="Action: list, nickname, stats, or reset",
-    invite_code="Invite code (for nickname action)",
-    nickname="Nickname for the invite (for nickname action)"
-)
-async def invite_tracking_command(interaction: discord.Interaction, action: str, invite_code: str = None, nickname: str = None):
-    """Manage invite tracking system"""
-    if not await owner_check(interaction):
-        return
-
-    try:
-        await interaction.response.defer(ephemeral=True)
-
-        if action.lower() == "list":
-            # List all tracked invites
-            if not INVITE_TRACKING:
-                await interaction.followup.send("📋 No invites are currently being tracked.", ephemeral=True)
-                return
-
-            report = "📋 **INVITE TRACKING REPORT**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-            for code, data in INVITE_TRACKING.items():
-                nickname_display = data.get("nickname", f"Invite-{code[:8]}")
-                report += f"**{nickname_display}** (`{code}`)\n"
-                report += f"• Total Joins: **{data.get('total_joins', 0)}**\n"
-                report += f"• Total Left: **{data.get('total_left', 0)}**\n"
-                report += f"• Current Members: **{data.get('current_members', 0)}**\n"
-                report += f"• Creator: <@{data.get('creator_id', 0)}>\n\n"
-
-            # Split message if too long
-            if len(report) > 2000:
-                chunks = [report[i:i+2000] for i in range(0, len(report), 2000)]
-                for i, chunk in enumerate(chunks):
-                    if i == 0:
-                        await interaction.followup.send(chunk, ephemeral=True)
-                    else:
-                        await interaction.followup.send(chunk, ephemeral=True)
-            else:
-                await interaction.followup.send(report, ephemeral=True)
-
-        elif action.lower() == "nickname":
-            # Set nickname for an invite
-            if not invite_code or not nickname:
-                await interaction.followup.send("❌ Both invite_code and nickname are required for this action.", ephemeral=True)
-                return
-
-            # Check if invite exists in tracking
-            if invite_code not in INVITE_TRACKING:
-                # Initialize tracking for this invite
-                try:
-                    # Try to fetch the invite to get creator info
-                    invite = await interaction.guild.fetch_invite(invite_code)
-                    INVITE_TRACKING[invite_code] = {
-                        "nickname": nickname,
-                        "total_joins": 0,
-                        "total_left": 0,
-                        "current_members": 0,
-                        "creator_id": invite.inviter.id if invite.inviter else 0,
-                        "guild_id": interaction.guild.id,
-                        "created_at": datetime.now(AMSTERDAM_TZ).isoformat(),
-                        "last_updated": datetime.now(AMSTERDAM_TZ).isoformat()
-                    }
-                except discord.NotFound:
-                    await interaction.followup.send(f"❌ Invite code `{invite_code}` not found or expired.", ephemeral=True)
-                    return
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Error fetching invite: {str(e)}", ephemeral=True)
-                    return
-            else:
-                # Update existing nickname
-                INVITE_TRACKING[invite_code]["nickname"] = nickname
-
-            # Save to database
-            await bot.save_invite_tracking()
-
-            await interaction.followup.send(f"✅ Invite `{invite_code}` nickname set to: **{nickname}**", ephemeral=True)
-
-        elif action.lower() == "stats":
-            # Show overall statistics
-            if not INVITE_TRACKING:
-                await interaction.followup.send("📊 No invite statistics available.", ephemeral=True)
-                return
-
-            total_joins = sum(data.get("total_joins", 0) for data in INVITE_TRACKING.values())
-            total_left = sum(data.get("total_left", 0) for data in INVITE_TRACKING.values())
-            current_members = sum(data.get("current_members", 0) for data in INVITE_TRACKING.values())
-            total_invites = len(INVITE_TRACKING)
-
-            retention_rate = ((current_members / total_joins) * 100) if total_joins > 0 else 0
-
-            stats_report = f"📊 **INVITE STATISTICS OVERVIEW**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            stats_report += f"**Overall Performance:**\n"
-            stats_report += f"• Total Tracked Invites: **{total_invites}**\n"
-            stats_report += f"• Total Members Joined: **{total_joins}**\n"
-            stats_report += f"• Total Members Left: **{total_left}**\n"
-            stats_report += f"• Current Active Members: **{current_members}**\n"
-            stats_report += f"• Retention Rate: **{retention_rate:.1f}%**\n\n"
-
-            # Top performers
-            if INVITE_TRACKING:
-                sorted_invites = sorted(INVITE_TRACKING.items(), key=lambda x: x[1].get("total_joins", 0), reverse=True)
-                stats_report += f"**Top Performing Invites:**\n"
-                for i, (code, data) in enumerate(sorted_invites[:5]):
-                    nickname_display = data.get("nickname", f"Invite-{code[:8]}")
-                    stats_report += f"{i+1}. **{nickname_display}**: {data.get('total_joins', 0)} joins\n"
-
-            await interaction.followup.send(stats_report, ephemeral=True)
-
-        elif action.lower() == "reset" and invite_code != "confirm":
-            # Reset all invite tracking (with confirmation)
-            await interaction.followup.send(
-                f"⚠️ **WARNING**: This will reset ALL invite tracking data!\n"
-                f"Currently tracking {len(INVITE_TRACKING)} invites.\n"
-                f"Use `/invitetracking reset confirm` to proceed.",
-                ephemeral=True
-            )
-
-        elif action.lower() == "reset" and invite_code == "confirm":
-            # Actually reset the data
-            INVITE_TRACKING.clear()
-            if bot.db_pool:
-                async with bot.db_pool.acquire() as conn:
-                    await conn.execute('DELETE FROM invite_tracking')
-                    await conn.execute('DELETE FROM member_joins')
-
-            await interaction.followup.send("✅ All invite tracking data has been reset.", ephemeral=True)
-
-        else:
-            await interaction.followup.send(
-                f"❌ Invalid action. Use: `list`, `nickname`, `stats`, or `reset`",
-                ephemeral=True
-            )
-
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error with invite tracking: {str(e)}", ephemeral=True)
-
-
 # ===== PRICE TRACKING COMMANDS =====
 # Price tracking is now permanently enabled - no toggle command needed
 
@@ -6550,7 +6408,7 @@ class TradeOverrideView(discord.ui.View):
     def __init__(self, active_trades):
         super().__init__(timeout=300)  # 5 minute timeout
         self.active_trades = active_trades
-        self.selected_trade = None
+        self.selected_trades = []
         
         # Add trade selection dropdown
         self.add_item(TradeSelectionDropdown(active_trades))
@@ -6565,7 +6423,7 @@ class TradeOverrideView(discord.ui.View):
             item.disabled = True
 
 class TradeSelectionDropdown(discord.ui.Select):
-    """Dropdown to select which trade to override"""
+    """Dropdown to select which trades to override (supports multi-select)"""
     
     def __init__(self, active_trades):
         # Create options for each active trade
@@ -6586,28 +6444,41 @@ class TradeSelectionDropdown(discord.ui.Select):
             ))
         
         super().__init__(
-            placeholder="🎯 Select a trade to modify...",
+            placeholder="🎯 Select trade(s) to modify (up to 5)...",
             min_values=1,
-            max_values=1,
+            max_values=min(5, len(options)),
             options=options
         )
     
     async def callback(self, interaction: discord.Interaction):
-        # Store the selected trade
-        self.view.selected_trade = self.values[0]
+        # Store the selected trades (can be multiple)
+        self.view.selected_trades = self.values
         
         # Enable the status dropdown
         status_dropdown = self.view.children[1]
         status_dropdown.disabled = False
         
-        # Update the message
-        trade_data = self.view.active_trades[self.values[0]]
-        pair = trade_data["pair"]
-        action = trade_data["action"]
+        # Update the message with selected trades info
+        selected_count = len(self.values)
+        
+        if selected_count == 1:
+            trade_data = self.view.active_trades[self.values[0]]
+            pair = trade_data["pair"]
+            action = trade_data["action"]
+            description = f"**Selected Trade:** {pair} - {action}\n\nNow select the status to apply:"
+        else:
+            trade_list = []
+            for msg_id in self.values:
+                trade_data = self.view.active_trades[msg_id]
+                pair = trade_data["pair"]
+                action = trade_data["action"]
+                trade_list.append(f"• **{pair} - {action}**")
+            
+            description = f"**Selected {selected_count} Trades:**\n" + "\n".join(trade_list) + "\n\nNow select the status to apply to all:"
         
         embed = discord.Embed(
             title="🔧 Trade Override System",
-            description=f"**Selected Trade:** {pair} - {action}\n\nNow select the status to apply:",
+            description=description,
             color=discord.Color.orange()
         )
         
@@ -6667,202 +6538,147 @@ class StatusSelectionDropdown(discord.ui.Select):
         await interaction.response.defer()
         
         try:
-            import asyncio  # Move import to top to prevent 'asyncio' not defined errors
-            message_id = self.view.selected_trade
+            import asyncio
+            selected_trades = self.view.selected_trades
             status = self.values[0]
             
-            # 🔥 DB-FIRST FIX: Always read current state from database, not cache
-            trade_data = await bot.get_trade_from_db(message_id)
-            if not trade_data:
+            # Validate selections
+            if not selected_trades:
                 embed = discord.Embed(
-                    title="❌ Trade Not Found",
-                    description="This trade is no longer in the database.",
+                    title="❌ No Trades Selected",
+                    description="Please select at least one trade to modify.",
                     color=discord.Color.red()
                 )
                 await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
                 return
-                
-            pair = trade_data["pair"]
-            action = trade_data["action"]
             
-            # Get current TP hits from DATABASE, not cache
-            current_tp_hits = trade_data.get("tp_hits", [])
+            # Track results
+            successful_trades = []
+            failed_trades = []
             
-            # Process the manual status change
-            if status == "sl_hit":
-                # SL hit - ends the trade
-                trade_data["status"] = "closed (sl hit - manual override)"
-                
-                # ⚠️ CRITICAL: Mark SL as manually overridden to prevent automatic re-detection
-                manual_overrides = trade_data.get("manual_overrides", [])
-                if "sl" not in manual_overrides:
-                    manual_overrides.append("sl")
-                trade_data["manual_overrides"] = manual_overrides
-                
-                await bot.remove_trade_from_db(message_id, "manual_sl_hit")
-                await bot.send_sl_notification(message_id, trade_data, offline_hit=False, manual_override=True)
-                
-                # Refresh the view's active_trades data to reflect database changes
-                fresh_trades = await bot.get_active_trades_from_db()
-                self.view.active_trades = fresh_trades
-                
-                embed = discord.Embed(
-                    title="✅ SL Hit Applied",
-                    description=f"🔴 **{pair} {action}** signal marked as SL hit\n\n"
-                               f"📝 Trade removed from tracking\n"
-                               f"📢 SL notification sent to community",
-                    color=discord.Color.red()
-                )
-                
-            elif status in ["tp1_hit", "tp2_hit", "tp3_hit"]:
-                tp_level = status.replace("_hit", "")
-                
-                # Check if this TP was already hit
-                if tp_level in current_tp_hits:
-                    embed = discord.Embed(
-                        title="⚠️ TP Already Hit",
-                        description=f"**{pair} {action}** signal already has **{tp_level.upper()}** marked as hit.\n\n"
-                                   f"Current TP hits: {', '.join([tp.upper() for tp in current_tp_hits])}",
-                        color=discord.Color.orange()
-                    )
-                    await interaction.followup.edit_message(interaction.message.id, embed=embed, view=None)
-                    return
-                
-                # Initialize manual overrides list
-                manual_overrides = trade_data.get("manual_overrides", [])
-                
-                # Helper function to safely add TP hit and mark as manual override
-                def add_tp_hit_and_override(tp_name):
-                    if tp_name not in trade_data["tp_hits"]:
-                        trade_data["tp_hits"].append(tp_name)
-                    if tp_name not in manual_overrides:
-                        manual_overrides.append(tp_name)
-                
-                # Add the selected TP to hits and mark as manual override
-                add_tp_hit_and_override(tp_level)
-                trade_data["manual_overrides"] = manual_overrides
-                
-                
-                # Apply specific logic for each TP level
-                if tp_level == "tp1":
-                    trade_data["status"] = "active (tp1 hit - manual override)"
-                    await bot.update_trade_in_db(message_id, trade_data)
+            # Process each selected trade
+            for message_id in selected_trades:
+                try:
+                    # Fetch from database
+                    trade_data = await bot.get_trade_from_db(message_id)
+                    if not trade_data:
+                        failed_trades.append({"id": message_id[:8], "reason": "Not found in database"})
+                        continue
                     
-                elif tp_level == "tp2":
-                    # TP2 hit - first send TP1 if not already hit, then TP2
-                    if "tp1" not in current_tp_hits:
-                        add_tp_hit_and_override("tp1")  # Properly mark TP1 as manual override too
+                    pair = trade_data["pair"]
+                    action = trade_data["action"]
+                    current_tp_hits = trade_data.get("tp_hits", [])
+                    
+                    # Process status-specific logic
+                    if status == "sl_hit":
+                        trade_data["status"] = "closed (sl hit - manual override)"
+                        manual_overrides = trade_data.get("manual_overrides", [])
+                        if "sl" not in manual_overrides:
+                            manual_overrides.append("sl")
                         trade_data["manual_overrides"] = manual_overrides
-                        await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
-                        # Small delay between messages
-                        await asyncio.sleep(2)
-                    
-                    # TP2 hit - activate breakeven
-                    trade_data["breakeven_active"] = True
-                    trade_data["status"] = "active (tp2 hit - manual override - breakeven active)"
-                    await bot.update_trade_in_db(message_id, trade_data)
-                    
-                elif tp_level == "tp3":
-                    # TP3 hit - first send TP1 and TP2 if not already hit, then TP3
-                    if "tp1" not in current_tp_hits:
-                        add_tp_hit_and_override("tp1")  # Properly mark TP1 as manual override too
+                        await bot.remove_trade_from_db(message_id, "manual_sl_hit")
+                        await bot.send_sl_notification(message_id, trade_data, offline_hit=False, manual_override=True)
+                        successful_trades.append(f"{pair} {action} - SL Hit")
+                        
+                    elif status in ["tp1_hit", "tp2_hit", "tp3_hit"]:
+                        tp_level = status.replace("_hit", "")
+                        
+                        if tp_level in current_tp_hits:
+                            failed_trades.append({"id": message_id[:8], "reason": f"{tp_level.upper()} already hit"})
+                            continue
+                        
+                        manual_overrides = trade_data.get("manual_overrides", [])
+                        
+                        def add_tp_hit_and_override(tp_name):
+                            if tp_name not in trade_data["tp_hits"]:
+                                trade_data["tp_hits"].append(tp_name)
+                            if tp_name not in manual_overrides:
+                                manual_overrides.append(tp_name)
+                        
+                        add_tp_hit_and_override(tp_level)
                         trade_data["manual_overrides"] = manual_overrides
-                        await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
-                        await asyncio.sleep(2)
-                    
-                    if "tp2" not in current_tp_hits:
-                        add_tp_hit_and_override("tp2")  # Properly mark TP2 as manual override too
-                        trade_data["breakeven_active"] = True
+                        
+                        if tp_level == "tp1":
+                            trade_data["status"] = "active (tp1 hit - manual override)"
+                            await bot.update_trade_in_db(message_id, trade_data)
+                        elif tp_level == "tp2":
+                            if "tp1" not in current_tp_hits:
+                                add_tp_hit_and_override("tp1")
+                                trade_data["manual_overrides"] = manual_overrides
+                                await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
+                                await asyncio.sleep(2)
+                            trade_data["breakeven_active"] = True
+                            trade_data["status"] = "active (tp2 hit - manual override - breakeven active)"
+                            await bot.update_trade_in_db(message_id, trade_data)
+                        elif tp_level == "tp3":
+                            if "tp1" not in current_tp_hits:
+                                add_tp_hit_and_override("tp1")
+                                trade_data["manual_overrides"] = manual_overrides
+                                await bot.send_tp_notification(message_id, trade_data, "tp1", offline_hit=False, manual_override=True)
+                                await asyncio.sleep(2)
+                            if "tp2" not in current_tp_hits:
+                                add_tp_hit_and_override("tp2")
+                                trade_data["breakeven_active"] = True
+                                trade_data["manual_overrides"] = manual_overrides
+                                await bot.send_tp_notification(message_id, trade_data, "tp2", offline_hit=False, manual_override=True)
+                                await asyncio.sleep(2)
+                            trade_data["status"] = "completed (tp3 hit - manual override)"
+                            await bot.remove_trade_from_db(message_id, "manual_tp3_hit")
+                        
+                        await bot.send_tp_notification(message_id, trade_data, tp_level, offline_hit=False, manual_override=True)
+                        successful_trades.append(f"{pair} {action} - {tp_level.upper()} Hit")
+                        
+                    elif status == "breakeven_after_tp2":
+                        trade_data["status"] = "closed (breakeven after tp2 - manual override)"
+                        manual_overrides = trade_data.get("manual_overrides", [])
+                        if "breakeven" not in manual_overrides:
+                            manual_overrides.append("breakeven")
                         trade_data["manual_overrides"] = manual_overrides
-                        await bot.send_tp_notification(message_id, trade_data, "tp2", offline_hit=False, manual_override=True)
-                        await asyncio.sleep(2)
+                        await bot.remove_trade_from_db(message_id, "manual_breakeven_hit")
+                        await bot.send_breakeven_notification(message_id, trade_data, offline_hit=False)
+                        successful_trades.append(f"{pair} {action} - Breakeven After TP2")
+                        
+                    elif status == "end_tracking":
+                        trade_data["status"] = "closed (ended by manual override)"
+                        await bot.remove_trade_from_db(message_id, "manual_end_tracking")
+                        successful_trades.append(f"{pair} {action} - Tracking Ended")
                     
-                    # TP3 hit - ends the trade
-                    trade_data["status"] = "completed (tp3 hit - manual override)"
-                    await bot.remove_trade_from_db(message_id, "manual_tp3_hit")
-                
-                # Send TP notification for the selected level
-                await bot.send_tp_notification(message_id, trade_data, tp_level, offline_hit=False, manual_override=True)
-                
-                # 🔥 CRITICAL FIX: Refresh cache after database update (like SL hits do)
-                fresh_trades = await bot.get_active_trades_from_db()
-                self.view.active_trades = fresh_trades
-                
-                # Prepare response embed
-                description = f"🟢 **{pair} {action}** signal marked as **{tp_level.upper()}** hit\n\n"
-                
-                if tp_level == "tp2":
-                    if "tp1" not in [tp for tp in current_tp_hits]:
-                        description += "📢 TP1 and TP2 notifications sent to community\n"
-                    else:
-                        description += "📢 TP2 notification sent to community\n"
-                    description += "🔄 Breakeven SL now active"
-                elif tp_level == "tp3":
-                    missing_tps = []
-                    if "tp1" not in current_tp_hits:
-                        missing_tps.append("TP1")
-                    if "tp2" not in current_tp_hits:
-                        missing_tps.append("TP2")
-                    
-                    if missing_tps:
-                        description += f"📢 {', '.join(missing_tps)} and TP3 notifications sent to community\n"
-                    else:
-                        description += "📢 TP3 notification sent to community\n"
-                    description += "📝 Trade completed and removed from tracking"
-                else:
-                    description += "📢 TP notification sent to community"
-                
-                embed = discord.Embed(
-                    title=f"✅ {tp_level.upper()} Hit Applied",
-                    description=description,
-                    color=discord.Color.green()
-                )
+                except Exception as trade_exc:
+                    failed_trades.append({"id": message_id[:8] if message_id else "Unknown", "reason": str(trade_exc)[:50]})
             
-            elif status == "breakeven_after_tp2":
-                # Mark the trade as closed due to breakeven after TP2
-                trade_data["status"] = "closed (breakeven after tp2 - manual override)"
-                
-                # ⚠️ CRITICAL: Mark breakeven as manually overridden to prevent automatic re-detection
-                manual_overrides = trade_data.get("manual_overrides", [])
-                if "breakeven" not in manual_overrides:
-                    manual_overrides.append("breakeven")
-                trade_data["manual_overrides"] = manual_overrides
-                
-                await bot.remove_trade_from_db(message_id, "manual_breakeven_hit")
-                await bot.send_breakeven_notification(message_id, trade_data, offline_hit=False)
-                
-                # Refresh the view's active_trades data to reflect database changes
-                fresh_trades = await bot.get_active_trades_from_db()
-                self.view.active_trades = fresh_trades
-                
-                embed = discord.Embed(
-                    title="✅ Breakeven After TP2 Applied",
-                    description=f"🟡 **{pair} {action}** signal marked as returned to breakeven after TP2\n\n"
-                               f"📝 Trade removed from tracking\n"
-                               f"📢 Breakeven notification sent to community",
-                    color=discord.Color.gold()
-                )
+            # Refresh cache
+            fresh_trades = await bot.get_active_trades_from_db()
+            self.view.active_trades = fresh_trades
             
-            elif status == "end_tracking":
-                # End tracking without sending any notifications
-                trade_data["status"] = "closed (ended by manual override)"
-                
-                # Remove trade from database and in-memory storage
-                await bot.remove_trade_from_db(message_id, "manual_end_tracking")
-                
-                # Refresh the view's active_trades data to reflect database changes
-                fresh_trades = await bot.get_active_trades_from_db()
-                self.view.active_trades = fresh_trades
-                
-                embed = discord.Embed(
-                    title="✅ Tracking Ended",
-                    description=f"⏹️ **{pair} {action}** signal tracking has been stopped\n\n"
-                               f"📝 Trade removed from tracking\n"
-                               f"🔕 No notifications sent to community",
-                    color=discord.Color.blue()
-                )
+            # Build summary embed
+            total = len(successful_trades) + len(failed_trades)
             
-            # Disable the view after successful operation
+            if len(successful_trades) == total:
+                title = "✅ All Trades Updated Successfully"
+                color = discord.Color.green()
+            elif len(successful_trades) > 0:
+                title = "⚠️ Partial Success"
+                color = discord.Color.orange()
+            else:
+                title = "❌ All Trades Failed"
+                color = discord.Color.red()
+            
+            description = f"**Processed {total} trade(s)**\n\n"
+            
+            if successful_trades:
+                description += "**✅ Successful:**\n"
+                for trade_info in successful_trades:
+                    description += f"• {trade_info}\n"
+                description += "\n"
+            
+            if failed_trades:
+                description += "**❌ Failed:**\n"
+                for fail_info in failed_trades:
+                    description += f"• ID {fail_info['id']}: {fail_info['reason']}\n"
+            
+            embed = discord.Embed(title=title, description=description, color=color)
+            
+            # Disable view
             for item in self.view.children:
                 item.disabled = True
                 
@@ -6918,198 +6734,6 @@ async def trade_override_command(interaction: discord.Interaction):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
         print(f"Trade override loading error: {e}")
-
-# Trade Statistics Command for Date Range Analysis
-@bot.tree.command(name="tradestats", description="[OWNER ONLY] Analyze trade performance statistics within a date range")
-@app_commands.describe(
-    start_date="Start date (format: YYYY-MM-DD, e.g., 2025-09-01)",
-    end_date="End date (format: YYYY-MM-DD, e.g., 2025-09-30)"
-)
-async def trade_stats_command(interaction: discord.Interaction, start_date: str, end_date: str):
-    """Analyze trade performance statistics within a specified date range"""
-    if not await owner_check(interaction):
-        return
-
-    await interaction.response.defer(ephemeral=True)
-
-    try:
-        # Parse and validate dates
-        from datetime import datetime, timedelta
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-        
-        if start_dt > end_dt:
-            embed = discord.Embed(
-                title="❌ Invalid Date Range",
-                description="Start date must be before or equal to end date.",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        # Add one day to end_dt to include the entire end date
-        end_dt_plus_one = end_dt + timedelta(days=1)
-
-        if not bot.db_pool:
-            embed = discord.Embed(
-                title="❌ Database Not Available", 
-                description="Trade statistics require database access.",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        async with bot.db_pool.acquire() as conn:
-            # Query completed trades within date range
-            completed_trades = await conn.fetch('''
-                SELECT * FROM completed_trades 
-                WHERE created_at >= $1 AND created_at < $2
-                ORDER BY created_at DESC
-            ''', start_dt, end_dt_plus_one)
-            
-            # Query currently active trades that were created in date range
-            active_trades = await conn.fetch('''
-                SELECT * FROM active_trades 
-                WHERE created_at >= $1 AND created_at < $2
-                ORDER BY created_at DESC
-            ''', start_dt, end_dt_plus_one)
-
-        # Calculate statistics
-        total_sent = len(completed_trades) + len(active_trades)
-        total_completed = len(completed_trades)
-        total_active = len(active_trades)
-        
-        # Count completion types
-        sl_hits = 0
-        tp1_hits = 0
-        tp2_hits = 0
-        tp3_hits = 0
-        breakeven_hits = 0
-        manual_overrides = 0
-        message_deleted = 0
-        
-        for trade in completed_trades:
-            completion_reason = trade['completion_reason']
-            
-            # Safely handle tp_hits - could be string, list, or None
-            tp_hits_raw = trade['tp_hits']
-            if isinstance(tp_hits_raw, str):
-                tp_hits_list = [tp.strip() for tp in tp_hits_raw.split(',') if tp.strip()] if tp_hits_raw else []
-            elif isinstance(tp_hits_raw, list):
-                tp_hits_list = [str(tp).strip() for tp in tp_hits_raw if str(tp).strip()]
-            else:
-                tp_hits_list = []
-            
-            # Safely handle manual_overrides - could be string, list, or None  
-            manual_overrides_raw = trade['manual_overrides']
-            if isinstance(manual_overrides_raw, str):
-                manual_overrides_list = [mo.strip() for mo in manual_overrides_raw.split(',') if mo.strip()] if manual_overrides_raw else []
-            elif isinstance(manual_overrides_raw, list):
-                manual_overrides_list = [str(mo).strip() for mo in manual_overrides_raw if str(mo).strip()]
-            else:
-                manual_overrides_list = []
-            
-            # Count by completion reason
-            if 'sl_hit' in completion_reason:
-                sl_hits += 1
-            elif 'tp3_hit' in completion_reason:
-                tp3_hits += 1
-            elif 'breakeven_hit' in completion_reason:
-                breakeven_hits += 1
-            elif 'message_deleted' in completion_reason:
-                message_deleted += 1
-            
-            # Count TP hits (including those that eventually hit TP3 or other endings)
-            if 'tp1' in tp_hits_list:
-                tp1_hits += 1
-            if 'tp2' in tp_hits_list:
-                tp2_hits += 1
-            if 'tp3' in tp_hits_list:
-                tp3_hits += 1
-                
-            # Count manual overrides
-            if manual_overrides_list and any(override.strip() for override in manual_overrides_list):
-                manual_overrides += 1
-
-        # Create embed with statistics
-        embed = discord.Embed(
-            title="📊 Trade Performance Statistics",
-            description=f"**Date Range:** {start_date} to {end_date}",
-            color=discord.Color.blue()
-        )
-        
-        # Overall statistics
-        embed.add_field(
-            name="📈 Trade Summary",
-            value=f"**Total Signals Sent:** {total_sent}\n"
-                  f"**Completed Trades:** {total_completed}\n"
-                  f"**Still Active:** {total_active}",
-            inline=True
-        )
-        
-        # Completion breakdown
-        completion_rate = (total_completed / total_sent * 100) if total_sent > 0 else 0
-        embed.add_field(
-            name="⚙️ Completion Status",
-            value=f"**Completion Rate:** {completion_rate:.1f}%\n"
-                  f"**SL Hits:** {sl_hits}\n"
-                  f"**TP3 Hits:** {tp3_hits}\n"
-                  f"**Breakeven Hits:** {breakeven_hits}\n"
-                  f"**Deleted Messages:** {message_deleted}",
-            inline=True
-        )
-        
-        # TP hit statistics
-        embed.add_field(
-            name="🎯 Take Profit Statistics",
-            value=f"**TP1 Hits:** {tp1_hits}\n"
-                  f"**TP2 Hits:** {tp2_hits}\n"
-                  f"**TP3 Hits:** {tp3_hits}\n"
-                  f"**Manual Overrides:** {manual_overrides}",
-            inline=True
-        )
-        
-        # Performance metrics
-        if total_completed > 0:
-            tp3_rate = (tp3_hits / total_completed * 100)
-            sl_rate = (sl_hits / total_completed * 100)
-            
-            embed.add_field(
-                name="📊 Success Metrics",
-                value=f"**TP3 Success Rate:** {tp3_rate:.1f}%\n"
-                      f"**SL Hit Rate:** {sl_rate:.1f}%\n"
-                      f"**Breakeven Rate:** {(breakeven_hits / total_completed * 100):.1f}%",
-                inline=False
-            )
-        
-        # Active trades note
-        if total_active > 0:
-            embed.add_field(
-                name="⏳ Active Trades Note",
-                value=f"There are **{total_active}** trades from this date range still running. "
-                      f"Use `/activetrades view` to see current status.",
-                inline=False
-            )
-        
-        embed.set_footer(text=f"Manual overrides via /tradeoverride are included in statistics")
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    except ValueError:
-        embed = discord.Embed(
-            title="❌ Invalid Date Format",
-            description="Please use YYYY-MM-DD format for dates (e.g., 2025-09-01)",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    except Exception as e:
-        embed = discord.Embed(
-            title="❌ Error Analyzing Trades",
-            description=f"Failed to analyze trade statistics: {str(e)}",
-            color=discord.Color.red()
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        print(f"Trade stats error: {e}")
 
 # SL-TP Scraper command removed as requested by user
 # @bot.tree.command(name="sl-tpscraper", description="[OWNER ONLY] Analyze trade signals and performance within a date range")
