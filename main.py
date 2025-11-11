@@ -894,6 +894,23 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Welcome DM config table for new member greetings
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS welcome_dm_config (
+                        id SERIAL PRIMARY KEY,
+                        enabled BOOLEAN DEFAULT FALSE,
+                        delay_minutes INTEGER DEFAULT 5,
+                        message TEXT DEFAULT 'Welcome to the server! 🎉'
+                    )
+                ''')
+                
+                # Seed default welcome DM config row
+                await conn.execute('''
+                    INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
+                    VALUES (1, FALSE, 5, 'Welcome to the server! 🎉')
+                    ON CONFLICT (id) DO NOTHING
+                ''')
+
                 # Bot status table for offline recovery
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS bot_status (
@@ -1496,11 +1513,34 @@ class TradingBot(commands.Bot):
         return expiry_time
 
     async def on_member_join(self, member):
-        """Handle new member joins and assign auto-role if enabled"""
-        if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG["role_id"]:
-            return
-
+        """Handle new member joins, assign auto-role if enabled, and schedule welcome DM"""
         try:
+            # Handle welcome DM scheduling (independent of auto-role)
+            if self.db_pool:
+                async with self.db_pool.acquire() as conn:
+                    config = await conn.fetchrow('SELECT * FROM welcome_dm_config WHERE id = 1')
+                    if config and config['enabled']:
+                        delay_minutes = config['delay_minutes']
+                        welcome_message = config['message']
+                        
+                        # Schedule the DM using asyncio
+                        async def send_delayed_dm():
+                            import asyncio
+                            await asyncio.sleep(delay_minutes * 60)
+                            try:
+                                await member.send(welcome_message)
+                                await self.log_to_discord(f"✅ Sent welcome DM to {member.display_name}")
+                            except discord.Forbidden:
+                                await self.log_to_discord(f"⚠️ Could not send welcome DM to {member.display_name} (DMs disabled)")
+                            except Exception as e:
+                                await self.log_to_discord(f"❌ Error sending welcome DM to {member.display_name}: {str(e)}")
+                        
+                        # Start the task in the background
+                        self.loop.create_task(send_delayed_dm())
+            
+            # Handle auto-role (only if enabled)
+            if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG["role_id"]:
+                return
             # Check if member joined through a bot invite
             invites_before = getattr(self, '_cached_invites',
                                      {}).get(member.guild.id, [])
@@ -5220,6 +5260,171 @@ async def level_command(interaction: discord.Interaction, user: discord.Member =
     embed.set_footer(text="Keep chatting in any text channel to level up!")
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# Welcome DM Command
+@bot.tree.command(name="welcomedm", description="[OWNER ONLY] Configure welcome DMs for new members")
+@app_commands.describe(
+    action="What do you want to do?",
+    delay="[CONFIGURE] Minutes to wait before sending DM (1-1440)",
+    message="[CONFIGURE] Custom welcome message to send"
+)
+async def welcome_dm_command(interaction: discord.Interaction,
+                             action: str,
+                             delay: int = None,
+                             message: str = None):
+    """Configure welcome DM system for new members"""
+    
+    if not await owner_check(interaction):
+        return
+    
+    try:
+        if action.lower() == "enable":
+            if bot.db_pool:
+                async with bot.db_pool.acquire() as conn:
+                    await conn.execute('UPDATE welcome_dm_config SET enabled = TRUE WHERE id = 1')
+                    result = await conn.fetchrow('SELECT * FROM welcome_dm_config WHERE id = 1')
+                    if not result:
+                        await conn.execute('''
+                            INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
+                            VALUES (1, TRUE, 5, 'Welcome to the server! 🎉')
+                        ''')
+                        result = await conn.fetchrow('SELECT * FROM welcome_dm_config WHERE id = 1')
+                    
+                    await interaction.response.send_message(
+                        f"✅ **Welcome DM system enabled!**\n"
+                        f"• **Delay:** {result['delay_minutes']} minutes\n"
+                        f"• **Message:** {result['message'][:100]}...\n\n"
+                        f"New members will receive a DM {result['delay_minutes']} minute(s) after joining.",
+                        ephemeral=True
+                    )
+            else:
+                await interaction.response.send_message(
+                    "❌ Database not available. Cannot enable welcome DMs.",
+                    ephemeral=True
+                )
+        
+        elif action.lower() == "disable":
+            if bot.db_pool:
+                async with bot.db_pool.acquire() as conn:
+                    await conn.execute('UPDATE welcome_dm_config SET enabled = FALSE WHERE id = 1')
+                await interaction.response.send_message(
+                    "✅ Welcome DM system disabled. No DMs will be sent to new members.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Database not available.",
+                    ephemeral=True
+                )
+        
+        elif action.lower() == "configure":
+            if not delay and not message:
+                await interaction.response.send_message(
+                    "❌ Please provide either a delay (minutes) or message to configure.\n"
+                    "Example: `/welcomedm action:configure delay:10 message:Welcome!`",
+                    ephemeral=True
+                )
+                return
+            
+            if delay is not None and (delay < 1 or delay > 1440):
+                await interaction.response.send_message(
+                    "❌ Delay must be between 1 and 1440 minutes (24 hours).",
+                    ephemeral=True
+                )
+                return
+            
+            if bot.db_pool:
+                async with bot.db_pool.acquire() as conn:
+                    result = await conn.fetchrow('SELECT * FROM welcome_dm_config WHERE id = 1')
+                    if not result:
+                        await conn.execute('''
+                            INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
+                            VALUES (1, FALSE, $1, $2)
+                        ''', delay or 5, message or 'Welcome to the server! 🎉')
+                    else:
+                        if delay is not None:
+                            await conn.execute('UPDATE welcome_dm_config SET delay_minutes = $1 WHERE id = 1', delay)
+                        if message is not None:
+                            await conn.execute('UPDATE welcome_dm_config SET message = $1 WHERE id = 1', message)
+                    
+                    result = await conn.fetchrow('SELECT * FROM welcome_dm_config WHERE id = 1')
+                    
+                    changes = []
+                    if delay is not None:
+                        changes.append(f"Delay: {delay} minutes")
+                    if message is not None:
+                        changes.append(f"Message: {message[:100]}...")
+                    
+                    await interaction.response.send_message(
+                        f"✅ **Welcome DM configured!**\n"
+                        f"• {chr(10).join(changes)}\n\n"
+                        f"Current status: {'Enabled ✅' if result['enabled'] else 'Disabled ❌'}",
+                        ephemeral=True
+                    )
+            else:
+                await interaction.response.send_message(
+                    "❌ Database not available.",
+                    ephemeral=True
+                )
+        
+        elif action.lower() == "status":
+            if bot.db_pool:
+                async with bot.db_pool.acquire() as conn:
+                    result = await conn.fetchrow('SELECT * FROM welcome_dm_config WHERE id = 1')
+                    
+                    if result:
+                        embed = discord.Embed(
+                            title="📨 Welcome DM System Status",
+                            color=discord.Color.green() if result['enabled'] else discord.Color.red()
+                        )
+                        embed.add_field(
+                            name="Status",
+                            value="✅ Enabled" if result['enabled'] else "❌ Disabled",
+                            inline=True
+                        )
+                        embed.add_field(
+                            name="Delay",
+                            value=f"{result['delay_minutes']} minutes",
+                            inline=True
+                        )
+                        embed.add_field(
+                            name="Message",
+                            value=result['message'] or "No message set",
+                            inline=False
+                        )
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                    else:
+                        await interaction.response.send_message(
+                            "ℹ️ Welcome DM system not configured yet.\n"
+                            "Use `/welcomedm action:configure` to set it up.",
+                            ephemeral=True
+                        )
+            else:
+                await interaction.response.send_message(
+                    "❌ Database not available.",
+                    ephemeral=True
+                )
+        else:
+            await interaction.response.send_message(
+                "❌ Invalid action. Use: `enable`, `disable`, `configure`, or `status`",
+                ephemeral=True
+            )
+    
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Error: {str(e)}",
+            ephemeral=True
+        )
+        print(f"Welcome DM command error: {e}")
+
+@welcome_dm_command.autocomplete('action')
+async def welcome_dm_action_autocomplete(interaction: discord.Interaction, current: str):
+    actions = ['enable', 'disable', 'configure', 'status']
+    return [
+        app_commands.Choice(name=action, value=action) for action in actions
+        if current.lower() in action.lower()
+    ]
 
 
 # Unified Giveaway Command
