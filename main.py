@@ -6124,7 +6124,7 @@ class GiveawayActionDropdown(discord.ui.Select):
                                  emoji="🎯"),
             discord.SelectOption(
                 label="End Giveaway",
-                description="End a giveaway early and select winners",
+                description="End a giveaway early",
                 value="end",
                 emoji="🏁")
         ]
@@ -6189,7 +6189,7 @@ class GiveawayActionDropdown(discord.ui.Select):
                 embed = discord.Embed(
                     title="🎯 User",
                     description=
-                    "❌ No active giveaways found.\n\nCreate a giveaway first before choosing winners.",
+                    "❌ No active giveaways found.\n\nCreate a giveaway first before selecting a User.",
                     color=discord.Color.red())
                 await interaction.response.send_message(embed=embed,
                                                         ephemeral=True)
@@ -6197,9 +6197,9 @@ class GiveawayActionDropdown(discord.ui.Select):
 
             view = ChooseWinnerView(ACTIVE_GIVEAWAYS)
             embed = discord.Embed(
-                title="🎯 Choose Guaranteed Winner",
+                title="🎯 User",
                 description=
-                "Select a giveaway and then select a user to guarantee as a winner:",
+                "Select a giveaway and then select a User:",
                 color=discord.Color.blue())
             await interaction.response.send_message(embed=embed,
                                                     view=view,
@@ -6340,7 +6340,7 @@ class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
 
 
 class ChooseWinnerView(discord.ui.View):
-    """View for choosing a guaranteed winner"""
+    """View for User"""
 
     def __init__(self, active_giveaways):
         super().__init__(timeout=300)
@@ -6463,9 +6463,9 @@ class GiveawaySelectionDropdown(discord.ui.Select):
             user_select.disabled = False
 
             embed = discord.Embed(
-                title="🎯 Choose Guaranteed Winner",
+                title="🎯 User",
                 description=
-                f"**Selected giveaway:** `{giveaway_id}`\n\nNow select a user to guarantee as a winner:",
+                f"**Selected giveaway:** `{giveaway_id}`\n\nNow select a User:",
                 color=discord.Color.blue())
             await interaction.response.edit_message(embed=embed,
                                                     view=self.view)
@@ -6476,7 +6476,7 @@ class GiveawaySelectionDropdown(discord.ui.Select):
             embed = discord.Embed(
                 title="🏁 Ending Giveaway",
                 description=
-                f"Ending giveaway `{giveaway_id}` and selecting winners...",
+                f"Ending giveaway `{giveaway_id}`...",
                 color=discord.Color.orange())
             await interaction.followup.send(embed=embed, ephemeral=True)
 
