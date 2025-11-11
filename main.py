@@ -6119,8 +6119,8 @@ class GiveawayActionDropdown(discord.ui.Select):
                 value="list",
                 emoji="📋"),
             discord.SelectOption(
-                label="Choose Winner",
-                description="Guarantee a specific user as a winner",
+                label="User",
+                description="Select a user for a giveaway",
                 value="choose_winner",
                 emoji="🎯"),
             discord.SelectOption(
@@ -6190,7 +6190,7 @@ class GiveawayActionDropdown(discord.ui.Select):
 
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-        elif action == "User":
+        elif action == "choose_winner":
             if not ACTIVE_GIVEAWAYS:
                 embed = discord.Embed(
                     title="🎯 User",
@@ -6203,9 +6203,9 @@ class GiveawayActionDropdown(discord.ui.Select):
 
             view = ChooseWinnerView(ACTIVE_GIVEAWAYS)
             embed = discord.Embed(
-                title="🎯 User",
+                title="🎯 User Selection",
                 description=
-                "Select a giveaway and then select a User:",
+                "Select a giveaway and then select a user:",
                 color=discord.Color.blue())
             await interaction.response.send_message(embed=embed,
                                                     view=view,
