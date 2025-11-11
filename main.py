@@ -1689,14 +1689,13 @@ class TradingBot(commands.Bot):
                         'SELECT * FROM welcome_dm_config WHERE id = 1')
                     if config and config['enabled']:
                         delay_minutes = config['delay_minutes']
-                        welcome_message = config['message']
 
                         # Schedule the DM using asyncio
                         async def send_delayed_dm():
                             import asyncio
                             await asyncio.sleep(delay_minutes * 60)
                             try:
-                                await member.send(welcome_message)
+                                await member.send(WELCOME_DM_MESSAGE)
                                 await self.log_to_discord(
                                     f"✅ Sent welcome DM to {member.display_name}"
                                 )
@@ -5928,17 +5927,18 @@ async def level_command(interaction: discord.Interaction,
 
 
 # Welcome DM Command
+# Hardcoded welcome message
+WELCOME_DM_MESSAGE = "Hey 👋, There's currently an active giveaway in <#1405490561963786271>. Don't forget to join! 🎉"
+
 @bot.tree.command(
     name="welcomedm",
     description="[OWNER ONLY] Configure welcome DMs for new members")
 @app_commands.describe(
     action="What do you want to do?",
-    delay="[CONFIGURE] Minutes to wait before sending DM (1-1440)",
-    message="[CONFIGURE] Custom welcome message to send")
+    delay="[CONFIGURE] Minutes to wait before sending DM (1-1440)")
 async def welcome_dm_command(interaction: discord.Interaction,
                              action: str,
-                             delay: int = None,
-                             message: str = None):
+                             delay: int = None):
     """Configure welcome DM system for new members"""
 
     if not await owner_check(interaction):
@@ -5956,8 +5956,8 @@ async def welcome_dm_command(interaction: discord.Interaction,
                     if not result:
                         await conn.execute('''
                             INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
-                            VALUES (1, TRUE, 5, 'Welcome to the server! 🎉')
-                        ''')
+                            VALUES (1, TRUE, 5, $1)
+                        ''', WELCOME_DM_MESSAGE)
                         result = await conn.fetchrow(
                             'SELECT * FROM welcome_dm_config WHERE id = 1')
 
@@ -5986,14 +5986,14 @@ async def welcome_dm_command(interaction: discord.Interaction,
                     "❌ Database not available.", ephemeral=True)
 
         elif action.lower() == "configure":
-            if not delay and not message:
+            if delay is None:
                 await interaction.response.send_message(
-                    "❌ Please provide either a delay (minutes) or message to configure.\n"
-                    "Example: `/welcomedm action:configure delay:10 message:Welcome!`",
+                    "❌ Please provide a delay (minutes) to configure.\n"
+                    "Example: `/welcomedm action:configure delay:10`",
                     ephemeral=True)
                 return
 
-            if delay is not None and (delay < 1 or delay > 1440):
+            if delay < 1 or delay > 1440:
                 await interaction.response.send_message(
                     "❌ Delay must be between 1 and 1440 minutes (24 hours).",
                     ephemeral=True)
@@ -6008,29 +6008,19 @@ async def welcome_dm_command(interaction: discord.Interaction,
                             '''
                             INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
                             VALUES (1, FALSE, $1, $2)
-                        ''', delay or 5, message or 'Welcome to the server! 🎉')
+                        ''', delay, WELCOME_DM_MESSAGE)
                     else:
-                        if delay is not None:
-                            await conn.execute(
-                                'UPDATE welcome_dm_config SET delay_minutes = $1 WHERE id = 1',
-                                delay)
-                        if message is not None:
-                            await conn.execute(
-                                'UPDATE welcome_dm_config SET message = $1 WHERE id = 1',
-                                message)
+                        await conn.execute(
+                            'UPDATE welcome_dm_config SET delay_minutes = $1, message = $2 WHERE id = 1',
+                            delay, WELCOME_DM_MESSAGE)
 
                     result = await conn.fetchrow(
                         'SELECT * FROM welcome_dm_config WHERE id = 1')
 
-                    changes = []
-                    if delay is not None:
-                        changes.append(f"Delay: {delay} minutes")
-                    if message is not None:
-                        changes.append(f"Message: {message[:100]}...")
-
                     await interaction.response.send_message(
                         f"✅ **Welcome DM configured!**\n"
-                        f"• {chr(10).join(changes)}\n\n"
+                        f"• Delay: {delay} minutes\n"
+                        f"• Message: {WELCOME_DM_MESSAGE}\n\n"
                         f"Current status: {'Enabled ✅' if result['enabled'] else 'Disabled ❌'}",
                         ephemeral=True)
             else:
@@ -6057,8 +6047,7 @@ async def welcome_dm_command(interaction: discord.Interaction,
                             value=f"{result['delay_minutes']} minutes",
                             inline=True)
                         embed.add_field(name="Message",
-                                        value=result['message']
-                                        or "No message set",
+                                        value=WELCOME_DM_MESSAGE,
                                         inline=False)
                         await interaction.response.send_message(embed=embed,
                                                                 ephemeral=True)
