@@ -6118,10 +6118,11 @@ class GiveawayActionDropdown(discord.ui.Select):
                 description="View all currently running giveaways",
                 value="list",
                 emoji="📋"),
-            discord.SelectOption(label="User",
-                                 description="User",
-                                 value="User",
-                                 emoji="🎯"),
+            discord.SelectOption(
+                label="Choose Winner",
+                description="Guarantee a specific user as a winner",
+                value="choose_winner",
+                emoji="🎯"),
             discord.SelectOption(
                 label="End Giveaway",
                 description="End a giveaway early",
@@ -6138,8 +6139,13 @@ class GiveawayActionDropdown(discord.ui.Select):
         action = self.values[0]
 
         if action == "create":
-            modal = GiveawayCreateModal()
-            await interaction.response.send_modal(modal)
+            view = RoleSelectionView(interaction.guild)
+            embed = discord.Embed(
+                title="📝 Create Giveaway - Step 1/2",
+                description="Select the role required to enter this giveaway:",
+                color=discord.Color.blue()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
         elif action == "list":
             await interaction.response.defer()
@@ -6226,6 +6232,56 @@ class GiveawayActionDropdown(discord.ui.Select):
                                                     ephemeral=True)
 
 
+class RoleSelectionView(discord.ui.View):
+    """View for selecting required role before creating giveaway"""
+    
+    def __init__(self, guild):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.add_item(RoleSelectionDropdown(guild))
+    
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+class RoleSelectionDropdown(discord.ui.Select):
+    """Dropdown to select required role for giveaway"""
+    
+    def __init__(self, guild):
+        roles = [role for role in guild.roles if role.name != "@everyone" and not role.managed]
+        
+        options = []
+        for role in roles[:25]:
+            options.append(discord.SelectOption(
+                label=role.name,
+                value=str(role.id),
+                description=f"ID: {role.id}"
+            ))
+        
+        super().__init__(
+            placeholder="🎭 Select required role for entry...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.guild = guild
+    
+    async def callback(self, interaction: discord.Interaction):
+        role_id = int(self.values[0])
+        role = self.guild.get_role(role_id)
+        
+        if not role:
+            await interaction.response.send_message(
+                "❌ Role not found. Please try again.",
+                ephemeral=True
+            )
+            return
+        
+        modal = GiveawayCreateModal(role)
+        await interaction.response.send_modal(modal)
+
+
 class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
     """Modal for collecting giveaway creation parameters"""
 
@@ -6234,109 +6290,86 @@ class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
         placeholder="E.g., Win a $100 Amazon gift card!",
         style=discord.TextStyle.paragraph,
         required=True,
-        max_length=500)
+        max_length=500
+    )
 
-    role_id_input = discord.ui.TextInput(
-        label="Required Role ID",
-        placeholder="Right-click role -> Copy ID (enable Developer Mode)",
+    winners_input = discord.ui.TextInput(
+        label="Number of Winners",
+        placeholder="E.g., 1, 2, 3, etc.",
         style=discord.TextStyle.short,
-        required=True)
+        required=True,
+        default="1"
+    )
 
-    winners_input = discord.ui.TextInput(label="Number of Winners",
-                                         placeholder="E.g., 1, 2, 3, etc.",
-                                         style=discord.TextStyle.short,
-                                         required=True,
-                                         default="1")
-
-    duration_input = discord.ui.TextInput(
-        label="Duration (format: 1w 2d 3h 30m)",
-        placeholder=
-        "E.g., 1w = 1 week, 2d = 2 days, 3h = 3 hours, 30m = 30 min",
+    end_time_input = discord.ui.TextInput(
+        label="End of the giveaway:",
+        placeholder="Format: YYYY-MM-DD HH:MM (e.g., 2025-11-15 18:30)",
         style=discord.TextStyle.short,
-        required=True)
+        required=True
+    )
+    
+    def __init__(self, role):
+        super().__init__()
+        self.selected_role = role
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
         try:
             message = self.message_input.value.strip()
-            role_id = int(self.role_id_input.value.strip())
             winners = int(self.winners_input.value.strip())
-
-            role = interaction.guild.get_role(role_id)
-            if not role:
-                await interaction.followup.send(
-                    f"❌ **Role not found!**\n\nCouldn't find a role with ID `{role_id}`.\n"
-                    + "Make sure you copied the correct role ID.",
-                    ephemeral=True)
-                return
+            end_time_str = self.end_time_input.value.strip()
 
             if winners <= 0:
                 await interaction.followup.send(
                     "❌ **Invalid winner count!**\n\nNumber of winners must be greater than 0.",
-                    ephemeral=True)
+                    ephemeral=True
+                )
                 return
 
-            duration_str = self.duration_input.value.strip().lower()
-            weeks = 0
-            days = 0
-            hours = 0
-            minutes = 0
-
-            import re
-            week_match = re.search(r'(\d+)w', duration_str)
-            day_match = re.search(r'(\d+)d', duration_str)
-            hour_match = re.search(r'(\d+)h', duration_str)
-            minute_match = re.search(r'(\d+)m', duration_str)
-
-            if week_match:
-                weeks = int(week_match.group(1))
-            if day_match:
-                days = int(day_match.group(1))
-            if hour_match:
-                hours = int(hour_match.group(1))
-            if minute_match:
-                minutes = int(minute_match.group(1))
-
-            total_minutes = weeks * 7 * 24 * 60 + days * 24 * 60 + hours * 60 + minutes
-
-            if total_minutes <= 0:
+            from datetime import datetime
+            try:
+                naive_end_time = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M")
+                end_time = AMSTERDAM_TZ.localize(naive_end_time)
+            except ValueError:
                 await interaction.followup.send(
-                    "❌ **Invalid duration!**\n\n" +
-                    "Duration must be greater than 0.\n" +
-                    "Format examples: `1w` (1 week), `2d` (2 days), `3h` (3 hours), `30m` (30 minutes)\n"
-                    + "You can combine them: `1w 2d 3h 30m`",
-                    ephemeral=True)
+                    "❌ **Invalid date/time format!**\n\n" +
+                    "Please use the format: **YYYY-MM-DD HH:MM**\n" +
+                    "Example: `2025-11-15 18:30`",
+                    ephemeral=True
+                )
+                return
+
+            if end_time <= datetime.now(AMSTERDAM_TZ):
+                await interaction.followup.send(
+                    "❌ **End time must be in the future!**\n\n" +
+                    f"Current time: {datetime.now(AMSTERDAM_TZ).strftime('%Y-%m-%d %H:%M')}",
+                    ephemeral=True
+                )
                 return
 
             settings = {
                 'message': message,
-                'role': role,
+                'role': self.selected_role,
                 'winners': winners,
-                'duration': {
-                    'weeks': weeks,
-                    'days': days,
-                    'hours': hours,
-                    'minutes': minutes,
-                    'total_minutes': total_minutes
-                }
+                'end_time': end_time
             }
 
-            await interaction.followup.send("🎉 Creating your giveaway...",
-                                            ephemeral=True)
+            await interaction.followup.send("🎉 Creating your giveaway...", ephemeral=True)
             await create_giveaway(interaction, settings)
 
         except ValueError as e:
             await interaction.followup.send(
-                f"❌ **Invalid input!**\n\n" + f"Make sure:\n" +
-                f"• Role ID is a valid number\n" +
-                f"• Winners is a valid number\n" +
-                f"• Duration follows the format (e.g., 1w 2d 3h 30m)\n\n" +
+                f"❌ **Invalid input!**\n\n" +
+                f"Make sure winners is a valid number and date/time is in correct format.\n\n" +
                 f"Error: {str(e)}",
-                ephemeral=True)
+                ephemeral=True
+            )
         except Exception as e:
             await interaction.followup.send(
-                f"❌ **Error creating giveaway:** {str(e)}", ephemeral=True)
+                f"❌ **Error creating giveaway:** {str(e)}",
+                ephemeral=True
+            )
 
 
 class ChooseWinnerView(discord.ui.View):
@@ -6527,31 +6560,8 @@ async def create_giveaway(interaction, settings):
         # Generate unique giveaway ID
         giveaway_id = f"giveaway_{int(datetime.now().timestamp())}"
 
-        # Calculate end time
-        end_time = datetime.now(AMSTERDAM_TZ) + timedelta(
-            minutes=settings['duration']['total_minutes'])
-
-        # Create duration text
-        duration = settings['duration']
-        duration_parts = []
-        if duration['weeks'] > 0:
-            duration_parts.append(
-                f"{duration['weeks']} week{'s' if duration['weeks'] != 1 else ''}"
-            )
-        if duration['days'] > 0:
-            duration_parts.append(
-                f"{duration['days']} day{'s' if duration['days'] != 1 else ''}"
-            )
-        if duration['hours'] > 0:
-            duration_parts.append(
-                f"{duration['hours']} hour{'s' if duration['hours'] != 1 else ''}"
-            )
-        if duration['minutes'] > 0:
-            duration_parts.append(
-                f"{duration['minutes']} minute{'s' if duration['minutes'] != 1 else ''}"
-            )
-
-        duration_text = ", ".join(duration_parts)
+        # Get end time from settings
+        end_time = settings['end_time']
 
         # Create the giveaway embed
         embed = discord.Embed(title="🎉 **GIVEAWAY** 🎉",
@@ -6559,7 +6569,11 @@ async def create_giveaway(interaction, settings):
                               color=discord.Color.gold(),
                               timestamp=end_time)
 
-        embed.add_field(name="⏰ Duration", value=duration_text, inline=True)
+        embed.add_field(
+            name="⏰ End of the giveaway:",
+            value=f"<t:{int(end_time.timestamp())}:F>",
+            inline=True
+        )
 
         embed.add_field(
             name="🏆 Winners",
@@ -6614,7 +6628,7 @@ async def create_giveaway(interaction, settings):
             f"ID: `{giveaway_id}`\n"
             f"Message: {settings['message'][:100]}{'...' if len(settings['message']) > 100 else ''}\n"
             f"Winners: {settings['winners']}\n"
-            f"Duration: {duration_text}\n"
+            f"End of the giveaway: <t:{int(end_time.timestamp())}:F>\n"
             f"Required Role: {settings['role'].mention}\n"
             f"Creator: {interaction.user.mention}")
 
@@ -6816,13 +6830,49 @@ async def on_reaction_add(reaction, user):
     member = reaction.message.guild.get_member(user.id)
 
     if not member or not required_role or required_role not in member.roles:
-        # Remove their reaction and send DM
+        # Remove their reaction and send DM with detailed level information
         try:
             await reaction.remove(user)
+            
+            # Get user's current level information
+            user_id_str = str(user.id)
+            user_data = LEVEL_SYSTEM["user_data"].get(user_id_str)
+            
+            if user_data:
+                current_level = user_data.get("current_level", 0)
+                message_count = user_data.get("message_count", 0)
+            else:
+                current_level = 0
+                message_count = 0
+            
+            # Determine current level name or "Unranked"
+            if current_level > 0:
+                current_level_text = f"Level {current_level}"
+            else:
+                current_level_text = "Unranked"
+            
+            # Calculate next level and messages needed
+            next_level = current_level + 1
+            if next_level in LEVEL_SYSTEM["level_requirements"]:
+                required_messages = LEVEL_SYSTEM["level_requirements"][next_level]
+                messages_remaining = required_messages - message_count
+                
+                # Make sure messages_remaining is not negative
+                if messages_remaining < 0:
+                    messages_remaining = 0
+                
+                level_progress_text = (
+                    f"You are currently **{current_level_text}**. "
+                    f"You need **{messages_remaining}** more chats to get to **Level {next_level}**."
+                )
+            else:
+                # User is at max level or beyond
+                level_progress_text = f"You are currently **{current_level_text}**."
+            
             await user.send(
                 "**Unfortunately, your current activity level is not high enough to enter this giveaway. "
-                +
-                "You can level up by participating in conversations in any of our text channels.**"
+                "You can level up by participating in conversations in any of our text channels.**\n\n"
+                f"{level_progress_text}"
             )
         except (discord.Forbidden, discord.NotFound):
             pass  # Can't DM user or remove reaction
