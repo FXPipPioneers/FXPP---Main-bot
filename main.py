@@ -6349,7 +6349,7 @@ class ChooseWinnerView(discord.ui.View):
 
         self.add_item(GiveawaySelectionDropdown(active_giveaways, "choose"))
         user_select = discord.ui.UserSelect(
-            placeholder="👤 Select user to guarantee as winner...")
+            placeholder="👤 Select User")
         user_select.callback = self.user_selected
         user_select.disabled = True
         self.add_item(user_select)
@@ -6388,11 +6388,11 @@ class ChooseWinnerView(discord.ui.View):
 
             ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user_id)
             embed = discord.Embed(
-                title="✅ Winner Guaranteed",
+                title="✅ User Selected",
                 description=
-                f"{member.mention} has been guaranteed as a winner for giveaway `{giveaway_id}`!\n\n"
+                f"{member.mention} has been selected `{giveaway_id}`!\n\n"
                 +
-                f"**Guaranteed winners:** {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
+                f"**Selected Users:** {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
                 color=discord.Color.green())
             await interaction.response.send_message(embed=embed,
                                                     ephemeral=True)
@@ -6506,7 +6506,7 @@ async def giveaway_command(interaction: discord.Interaction):
                         value="View all currently running giveaways",
                         inline=False)
         embed.add_field(name="🎯 User",
-                        value="Guarantee a specific user as a winner",
+                        value="Select a User",
                         inline=False)
         embed.add_field(name="🏁 End Giveaway",
                         value="End a giveaway early and select winners",
