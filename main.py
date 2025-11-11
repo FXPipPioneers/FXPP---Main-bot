@@ -5427,76 +5427,241 @@ async def welcome_dm_action_autocomplete(interaction: discord.Interaction, curre
     ]
 
 
-# Unified Giveaway Command
-@bot.tree.command(name="giveaway", description="Complete giveaway management")
-@app_commands.describe(
-    action="What do you want to do with giveaways?",
-    message="[CREATE] Custom giveaway message explaining what it's for",
-    required_role="[CREATE] Role required to enter the giveaway", 
-    winners="[CREATE] Number of users that can win the giveaway",
-    weeks="[CREATE] Number of weeks for giveaway duration",
-    days="[CREATE] Number of days for giveaway duration",
-    hours="[CREATE] Number of hours for giveaway duration", 
-    minutes="[CREATE] Number of minutes for giveaway duration",
-    giveaway_id="[SELECT/END] ID of the giveaway (use action=list to see active ones)",
-    user="[SELECT]"
-)
-async def giveaway_command(interaction: discord.Interaction,
-                          action: str,
-                          message: str = None,
-                          required_role: discord.Role = None,
-                          winners: int = 1,
-                          weeks: int = 0,
-                          days: int = 0, 
-                          hours: int = 0,
-                          minutes: int = 0,
-                          giveaway_id: str = None,
-                          user: discord.Member = None):
-    """Unified giveaway management command"""
+class GiveawayMenuView(discord.ui.View):
+    """Main interactive menu for giveaway management"""
+    
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(GiveawayActionDropdown())
+    
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
 
-    # Owner check for security
-    if not await owner_check(interaction):
-        return
 
-    try:
+class GiveawayActionDropdown(discord.ui.Select):
+    """Dropdown to select giveaway action"""
+    
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="Create Giveaway",
+                description="Create a new giveaway with custom settings",
+                value="create",
+                emoji="📝"
+            ),
+            discord.SelectOption(
+                label="List Active Giveaways",
+                description="View all currently running giveaways",
+                value="list",
+                emoji="📋"
+            ),
+            discord.SelectOption(
+                label="Choose Winner",
+                description="Guarantee a specific user as a winner",
+                value="choose_winner",
+                emoji="🎯"
+            ),
+            discord.SelectOption(
+                label="End Giveaway",
+                description="End a giveaway early and select winners",
+                value="end",
+                emoji="🏁"
+            )
+        ]
+        
+        super().__init__(
+            placeholder="🎉 Select a giveaway action...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        action = self.values[0]
+        
         if action == "create":
-            # Validate required parameters for create
-            if not message:
-                await interaction.response.send_message(
-                    "❌ **Message is required** for creating giveaways.\n" +
-                    "Example: `message: Win a $100 Amazon gift card!`",
+            modal = GiveawayCreateModal()
+            await interaction.response.send_modal(modal)
+            
+        elif action == "list":
+            await interaction.response.defer()
+            
+            if not ACTIVE_GIVEAWAYS:
+                embed = discord.Embed(
+                    title="📋 Active Giveaways",
+                    description="No active giveaways found.",
+                    color=discord.Color.blue()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            giveaway_list = []
+            for gid, data in ACTIVE_GIVEAWAYS.items():
+                end_time = data['end_time']
+                if isinstance(end_time, str):
+                    end_time = datetime.fromisoformat(end_time)
+                if end_time.tzinfo is None:
+                    end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
+                
+                time_left = end_time - datetime.now(AMSTERDAM_TZ)
+                if time_left.total_seconds() > 0:
+                    hours_left = int(time_left.total_seconds() // 3600)
+                    minutes_left = int((time_left.total_seconds() % 3600) // 60)
+                    chosen_count = len(data.get('chosen_winners', []))
+                    
+                    giveaway_list.append(
+                        f"**{gid}**\n" +
+                        f"  ⏰ Time left: {hours_left}h {minutes_left}m\n" +
+                        f"  🏆 Winners: {data['winner_count']}\n" +
+                        f"  🎯 Guaranteed: {chosen_count}/{data['winner_count']}\n"
+                    )
+            
+            if not giveaway_list:
+                embed = discord.Embed(
+                    title="📋 Active Giveaways",
+                    description="No active giveaways found.",
+                    color=discord.Color.blue()
+                )
+            else:
+                embed = discord.Embed(
+                    title="📋 Active Giveaways",
+                    description="\n".join(giveaway_list),
+                    color=discord.Color.gold()
+                )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        elif action == "choose_winner":
+            if not ACTIVE_GIVEAWAYS:
+                embed = discord.Embed(
+                    title="🎯 Choose Winner",
+                    description="❌ No active giveaways found.\n\nCreate a giveaway first before choosing winners.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            view = ChooseWinnerView(ACTIVE_GIVEAWAYS)
+            embed = discord.Embed(
+                title="🎯 Choose Guaranteed Winner",
+                description="Select a giveaway and then select a user to guarantee as a winner:",
+                color=discord.Color.blue()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            
+        elif action == "end":
+            if not ACTIVE_GIVEAWAYS:
+                embed = discord.Embed(
+                    title="🏁 End Giveaway",
+                    description="❌ No active giveaways found.\n\nThere are no giveaways to end.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            view = EndGiveawayView(ACTIVE_GIVEAWAYS)
+            embed = discord.Embed(
+                title="🏁 End Giveaway Early",
+                description="Select a giveaway to end and select winners:",
+                color=discord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
+    """Modal for collecting giveaway creation parameters"""
+    
+    message_input = discord.ui.TextInput(
+        label="Giveaway Message",
+        placeholder="E.g., Win a $100 Amazon gift card!",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=500
+    )
+    
+    role_id_input = discord.ui.TextInput(
+        label="Required Role ID",
+        placeholder="Right-click role -> Copy ID (enable Developer Mode)",
+        style=discord.TextStyle.short,
+        required=True
+    )
+    
+    winners_input = discord.ui.TextInput(
+        label="Number of Winners",
+        placeholder="E.g., 1, 2, 3, etc.",
+        style=discord.TextStyle.short,
+        required=True,
+        default="1"
+    )
+    
+    duration_input = discord.ui.TextInput(
+        label="Duration (format: 1w 2d 3h 30m)",
+        placeholder="E.g., 1w = 1 week, 2d = 2 days, 3h = 3 hours, 30m = 30 min",
+        style=discord.TextStyle.short,
+        required=True
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            message = self.message_input.value.strip()
+            role_id = int(self.role_id_input.value.strip())
+            winners = int(self.winners_input.value.strip())
+            
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                await interaction.followup.send(
+                    f"❌ **Role not found!**\n\nCouldn't find a role with ID `{role_id}`.\n" +
+                    "Make sure you copied the correct role ID.",
                     ephemeral=True
                 )
                 return
-
-            if not required_role:
-                await interaction.response.send_message(
-                    "❌ **Required role is required** for creating giveaways.\n" +
-                    "Example: `required_role: @Active Members`",
-                    ephemeral=True
-                )
-                return
-
+            
             if winners <= 0:
-                await interaction.response.send_message(
-                    "❌ Winner count must be greater than 0.",
+                await interaction.followup.send(
+                    "❌ **Invalid winner count!**\n\nNumber of winners must be greater than 0.",
                     ephemeral=True
                 )
                 return
-
+            
+            duration_str = self.duration_input.value.strip().lower()
+            weeks = 0
+            days = 0
+            hours = 0
+            minutes = 0
+            
+            import re
+            week_match = re.search(r'(\d+)w', duration_str)
+            day_match = re.search(r'(\d+)d', duration_str)
+            hour_match = re.search(r'(\d+)h', duration_str)
+            minute_match = re.search(r'(\d+)m', duration_str)
+            
+            if week_match:
+                weeks = int(week_match.group(1))
+            if day_match:
+                days = int(day_match.group(1))
+            if hour_match:
+                hours = int(hour_match.group(1))
+            if minute_match:
+                minutes = int(minute_match.group(1))
+            
             total_minutes = weeks * 7 * 24 * 60 + days * 24 * 60 + hours * 60 + minutes
+            
             if total_minutes <= 0:
-                await interaction.response.send_message(
-                    "❌ You must set a duration greater than 0.\n" +
-                    "Use `weeks`, `days`, `hours`, and/or `minutes` parameters.",
+                await interaction.followup.send(
+                    "❌ **Invalid duration!**\n\n" +
+                    "Duration must be greater than 0.\n" +
+                    "Format examples: `1w` (1 week), `2d` (2 days), `3h` (3 hours), `30m` (30 minutes)\n" +
+                    "You can combine them: `1w 2d 3h 30m`",
                     ephemeral=True
                 )
                 return
-
-            # Create giveaway settings
+            
             settings = {
                 'message': message,
-                'role': required_role,
+                'role': role,
                 'winners': winners,
                 'duration': {
                     'weeks': weeks,
@@ -5506,155 +5671,216 @@ async def giveaway_command(interaction: discord.Interaction,
                     'total_minutes': total_minutes
                 }
             }
-
-            await interaction.response.send_message("🎉 Creating your giveaway...", ephemeral=True)
+            
+            await interaction.followup.send("🎉 Creating your giveaway...", ephemeral=True)
             await create_giveaway(interaction, settings)
-
-        elif action == "list":
-            # List all active giveaways
-            if not ACTIVE_GIVEAWAYS:
-                await interaction.response.send_message(
-                    "📋 **No active giveaways found.**",
-                    ephemeral=True
-                )
-                return
-
-            giveaway_list = []
-            for gid, data in ACTIVE_GIVEAWAYS.items():
-                end_time = data['end_time']
-                if isinstance(end_time, str):
-                    end_time = datetime.fromisoformat(end_time)
-                if end_time.tzinfo is None:
-                    end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
-
-                time_left = end_time - datetime.now(AMSTERDAM_TZ)
-                if time_left.total_seconds() > 0:
-                    hours_left = int(time_left.total_seconds() // 3600)
-                    minutes_left = int((time_left.total_seconds() % 3600) // 60)
-                    chosen_count = len(data.get('chosen_winners', []))
-
-                    giveaway_list.append(
-                        f"**{gid}**\n" +
-                        f"  ⏰ Time left: {hours_left}h {minutes_left}m\n" +
-                        f"  🏆 Winners: {data['winner_count']}\n" +
-                        f"  🎯 Guaranteed: {chosen_count}/{data['winner_count']}\n"
-                    )
-
-            if not giveaway_list:
-                await interaction.response.send_message(
-                    "📋 **No active giveaways found.**",
-                    ephemeral=True
-                )
-                return
-
-            await interaction.response.send_message(
-                "📋 **Active Giveaways:**\n\n" + "\n".join(giveaway_list),
+            
+        except ValueError as e:
+            await interaction.followup.send(
+                f"❌ **Invalid input!**\n\n" +
+                f"Make sure:\n" +
+                f"• Role ID is a valid number\n" +
+                f"• Winners is a valid number\n" +
+                f"• Duration follows the format (e.g., 1w 2d 3h 30m)\n\n" +
+                f"Error: {str(e)}",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ **Error creating giveaway:** {str(e)}",
                 ephemeral=True
             )
 
-        elif action == "choose_winner":
-            # Guarantee a specific user as winner
-            if not giveaway_id:
+
+class ChooseWinnerView(discord.ui.View):
+    """View for choosing a guaranteed winner"""
+    
+    def __init__(self, active_giveaways):
+        super().__init__(timeout=300)
+        self.active_giveaways = active_giveaways
+        self.selected_giveaway = None
+        
+        self.add_item(GiveawaySelectionDropdown(active_giveaways, "choose"))
+        user_select = discord.ui.UserSelect(placeholder="👤 Select user to guarantee as winner...")
+        user_select.callback = self.user_selected
+        user_select.disabled = True
+        self.add_item(user_select)
+    
+    async def user_selected(self, interaction: discord.Interaction):
+        if not self.selected_giveaway:
+            await interaction.response.send_message(
+                "❌ Please select a giveaway first!",
+                ephemeral=True
+            )
+            return
+        
+        user = interaction.data['values'][0]
+        user_id = int(user)
+        member = interaction.guild.get_member(user_id)
+        
+        if not member:
+            await interaction.response.send_message(
+                "❌ User not found in this server!",
+                ephemeral=True
+            )
+            return
+        
+        giveaway_id = self.selected_giveaway
+        
+        if 'chosen_winners' not in ACTIVE_GIVEAWAYS[giveaway_id]:
+            ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'] = []
+        
+        if user_id not in ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners']:
+            current_chosen = len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])
+            max_winners = ACTIVE_GIVEAWAYS[giveaway_id]['winner_count']
+            
+            if current_chosen >= max_winners:
                 await interaction.response.send_message(
-                    "❌ **Giveaway ID is required** for choosing winners.\n" +
-                    "Use `action: list` first to see active giveaway IDs.",
+                    f"❌ Cannot add more guaranteed winners.\n" +
+                    f"This giveaway already has {current_chosen} guaranteed winner(s) and the max is {max_winners}.",
                     ephemeral=True
                 )
                 return
-
-            if not user:
-                await interaction.response.send_message(
-                    "❌ **User is required** for choosing winners.\n" +
-                    "Example: `user: @JohnDoe`",
-                    ephemeral=True
-                )
-                return
-
-            if giveaway_id not in ACTIVE_GIVEAWAYS:
-                await interaction.response.send_message(
-                    f"❌ Giveaway `{giveaway_id}` not found.\n" +
-                    f"Use `action: list` to see active giveaways.",
-                    ephemeral=True
-                )
-                return
-
-            # Add chosen winner
-            if 'chosen_winners' not in ACTIVE_GIVEAWAYS[giveaway_id]:
-                ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'] = []
-
-            if user.id not in ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners']:
-                # Check if we're not exceeding winner limit
-                current_chosen = len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])
-                max_winners = ACTIVE_GIVEAWAYS[giveaway_id]['winner_count']
-
-                if current_chosen >= max_winners:
-                    await interaction.response.send_message(
-                        f"❌ Cannot add more guaranteed winners.\n" +
-                        f"This giveaway already has {current_chosen} guaranteed winner(s) and the max is {max_winners}.",
-                        ephemeral=True
-                    )
-                    return
-
-                ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user.id)
-                await interaction.response.send_message(
-                    f"✅ **{user.mention} has been guaranteed as a winner** for giveaway `{giveaway_id}`!\n" +
-                    f"Guaranteed winners: {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    f"❌ {user.mention} is already guaranteed as a winner for this giveaway.",
-                    ephemeral=True
-                )
-
-        elif action == "end":
-            # End a giveaway early
-            if not giveaway_id:
-                await interaction.response.send_message(
-                    "❌ **Giveaway ID is required** for ending giveaways.\n" +
-                    "Use `action: list` first to see active giveaway IDs.",
-                    ephemeral=True
-                )
-                return
-
-            if giveaway_id not in ACTIVE_GIVEAWAYS:
-                await interaction.response.send_message(
-                    f"❌ Giveaway `{giveaway_id}` not found.\n" +
-                    f"Use `action: list` to see active giveaways.",
-                    ephemeral=True
-                )
-                return
-
-            await interaction.response.send_message(f"🏁 Ending giveaway `{giveaway_id}`...", ephemeral=True)
-            await end_giveaway(giveaway_id, interaction)
-
+            
+            ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user_id)
+            embed = discord.Embed(
+                title="✅ Winner Guaranteed",
+                description=f"{member.mention} has been guaranteed as a winner for giveaway `{giveaway_id}`!\n\n" +
+                            f"**Guaranteed winners:** {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
+                color=discord.Color.green()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message(
-                "❌ **Invalid action!**\n\n" +
-                "**Available actions:**\n" +
-                "• `create` - Create a new giveaway\n" +
-                "• `list` - List all active giveaways\n" +
-                "• `choose_winner` - Guarantee a specific user as winner\n" +
-                "• `end` - End a giveaway early and select winners",
+                f"❌ {member.mention} is already guaranteed as a winner for this giveaway.",
                 ephemeral=True
             )
+    
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
 
+
+class EndGiveawayView(discord.ui.View):
+    """View for ending a giveaway early"""
+    
+    def __init__(self, active_giveaways):
+        super().__init__(timeout=300)
+        self.active_giveaways = active_giveaways
+        self.add_item(GiveawaySelectionDropdown(active_giveaways, "end"))
+    
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+class GiveawaySelectionDropdown(discord.ui.Select):
+    """Dropdown to select a giveaway"""
+    
+    def __init__(self, active_giveaways, action_type):
+        self.action_type = action_type
+        
+        options = []
+        for gid, data in list(active_giveaways.items())[:25]:
+            end_time = data['end_time']
+            if isinstance(end_time, str):
+                end_time = datetime.fromisoformat(end_time)
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
+            
+            time_left = end_time - datetime.now(AMSTERDAM_TZ)
+            hours_left = int(time_left.total_seconds() // 3600)
+            minutes_left = int((time_left.total_seconds() % 3600) // 60)
+            
+            short_id = gid.replace("giveaway_", "")[:8] + "..."
+            
+            options.append(discord.SelectOption(
+                label=f"{data['winner_count']} winner(s) | {hours_left}h {minutes_left}m left",
+                description=f"ID: {short_id}",
+                value=gid
+            ))
+        
+        placeholder = "🎯 Select a giveaway..." if action_type == "choose" else "🏁 Select giveaway to end..."
+        
+        super().__init__(
+            placeholder=placeholder,
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        giveaway_id = self.values[0]
+        
+        if self.action_type == "choose":
+            self.view.selected_giveaway = giveaway_id
+            
+            user_select = self.view.children[1]
+            user_select.disabled = False
+            
+            embed = discord.Embed(
+                title="🎯 Choose Guaranteed Winner",
+                description=f"**Selected giveaway:** `{giveaway_id}`\n\nNow select a user to guarantee as a winner:",
+                color=discord.Color.blue()
+            )
+            await interaction.response.edit_message(embed=embed, view=self.view)
+            
+        elif self.action_type == "end":
+            await interaction.response.defer()
+            
+            embed = discord.Embed(
+                title="🏁 Ending Giveaway",
+                description=f"Ending giveaway `{giveaway_id}` and selecting winners...",
+                color=discord.Color.orange()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+            await end_giveaway(giveaway_id, interaction)
+
+
+# Menu-Based Giveaway Command
+@bot.tree.command(name="giveaway", description="Manage giveaways with an interactive menu")
+async def giveaway_command(interaction: discord.Interaction):
+    """Open the giveaway management menu"""
+    
+    if not await owner_check(interaction):
+        return
+    
+    try:
+        view = GiveawayMenuView()
+        embed = discord.Embed(
+            title="🎉 Giveaway Management",
+            description="Select an action from the menu below to manage giveaways:",
+            color=discord.Color.gold()
+        )
+        embed.add_field(
+            name="📝 Create Giveaway",
+            value="Set up a new giveaway with custom settings",
+            inline=False
+        )
+        embed.add_field(
+            name="📋 List Active Giveaways",
+            value="View all currently running giveaways",
+            inline=False
+        )
+        embed.add_field(
+            name="🎯 Choose Winner",
+            value="Guarantee a specific user as a winner",
+            inline=False
+        )
+        embed.add_field(
+            name="🏁 End Giveaway",
+            value="End a giveaway early and select winners",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        
     except Exception as e:
         await interaction.response.send_message(
-            f"❌ Error in giveaway command: {str(e)}",
+            f"❌ Error opening giveaway menu: {str(e)}",
             ephemeral=True
         )
-
-# Autocomplete for giveaway actions
-@giveaway_command.autocomplete('action')
-async def giveaway_action_autocomplete(interaction: discord.Interaction, current: str):
-    actions = [
-        app_commands.Choice(name="📝 Create", value="create"),
-        app_commands.Choice(name="📋 List", value="list"), 
-        app_commands.Choice(name="🎯 Select", value="choose_winner"),
-        app_commands.Choice(name="🏁 End", value="end")
-    ]
-    return [choice for choice in actions if current.lower() in choice.name.lower()]
 
 
 async def create_giveaway(interaction, settings):
