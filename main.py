@@ -7071,8 +7071,8 @@ async def on_reaction_add(reaction, user):
                 level_progress_text = f"You are currently **{current_level_text}**."
 
             await user.send(
-                "**Unfortunately, your current activity level is not high enough to enter this giveaway. "
-                "You can level up by participating in conversations in any of our text channels.**\n\n"
+                "Unfortunately, your current activity level is not high enough to enter this giveaway. "
+                "You can level up by participating in conversations in any of our text channels.\n\n"
                 f"{level_progress_text}")
         except (discord.Forbidden, discord.NotFound):
             pass  # Can't DM user or remove reaction
