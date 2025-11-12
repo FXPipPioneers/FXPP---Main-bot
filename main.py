@@ -207,7 +207,8 @@ class TradingBot(commands.Bot):
         giveaway_debug_channel = self.get_channel(GIVEAWAY_DEBUG_CHANNEL_ID)
         if giveaway_debug_channel:
             try:
-                await giveaway_debug_channel.send(f"🎁 **Giveaway Log:** {message}")
+                await giveaway_debug_channel.send(
+                    f"🎁 **Giveaway Log:** {message}")
             except Exception as e:
                 print(f"Failed to send giveaway log to Discord: {e}")
         # Always print to console as backup
@@ -2578,14 +2579,16 @@ class TradingBot(commands.Bot):
                         "status":
                         row['status'],
                         "tp_hits":
-                        [tp for tp in row['tp_hits'].split(',') if tp] if row['tp_hits'] else [],
+                        [tp for tp in row['tp_hits'].split(',')
+                         if tp] if row['tp_hits'] else [],
                         "breakeven_active":
                         row['breakeven_active'],
                         "entry_type":
                         row.get('entry_type'),  # Add entry_type field
-                        "manual_overrides":
-                        [mo for mo in row.get('manual_overrides', '').split(',') if mo]
-                        if row.get('manual_overrides') else
+                        "manual_overrides": [
+                            mo for mo in row.get('manual_overrides', '').split(
+                                ',') if mo
+                        ] if row.get('manual_overrides') else
                         [],  # Add manual_overrides field
                         "channel_id":
                         row['channel_id'],
@@ -2811,7 +2814,9 @@ class TradingBot(commands.Bot):
 
                 if row:
                     # Convert database row to trade data format (filter out empty strings from split)
-                    tp_hits_list = [tp for tp in row['tp_hits'].split(',') if tp] if row['tp_hits'] else []
+                    tp_hits_list = [
+                        tp for tp in row['tp_hits'].split(',') if tp
+                    ] if row['tp_hits'] else []
                     return {
                         'pair':
                         row['pair'],
@@ -6782,8 +6787,7 @@ async def create_giveaway(interaction, settings):
             f"⏰ **End Time:** <t:{int(end_time.timestamp())}:F> (<t:{int(end_time.timestamp())}:R>)\n"
             f"🎭 **Required Role:** {settings['role'].mention} (ID: {settings['role'].id})\n"
             f"👤 **Created by:** {interaction.user.mention}\n"
-            f"📍 **Channel:** {giveaway_channel.mention}"
-        )
+            f"📍 **Channel:** {giveaway_channel.mention}")
 
         # Clear temp settings
         if hasattr(bot, '_temp_giveaway'):
@@ -6934,8 +6938,7 @@ async def end_giveaway(giveaway_id, interaction=None):
                 f"👥 **Total Valid Participants:** {len(valid_participants) + len(final_winners)}\n"
                 f"🏅 **Winners Selected:** {len(final_winners)}\n"
                 f"🎭 **Required Role:** {required_role.name if required_role else 'Unknown'} (ID: {giveaway_data['required_role_id']})\n"
-                f"📍 **Channel:** {channel.mention}"
-            )
+                f"📍 **Channel:** {channel.mention}")
         else:
             await bot.log_giveaway_event(
                 f"**😔 GIVEAWAY ENDED - NO WINNERS**\n"
@@ -6943,8 +6946,7 @@ async def end_giveaway(giveaway_id, interaction=None):
                 f"💬 **Message ID:** {message.id}\n"
                 f"⚠️ **Reason:** No valid participants found or no one had the required role\n"
                 f"🎭 **Required Role:** {required_role.name if required_role else 'Unknown'} (ID: {giveaway_data['required_role_id']})\n"
-                f"📍 **Channel:** {channel.mention}"
-            )
+                f"📍 **Channel:** {channel.mention}")
 
         # Remove from active giveaways
         del ACTIVE_GIVEAWAYS[giveaway_id]
@@ -6991,7 +6993,7 @@ async def on_reaction_add(reaction, user):
     # Check if user has required role
     required_role = reaction.message.guild.get_role(
         giveaway_data['required_role_id'])
-    
+
     # Fetch member fresh from guild to avoid cached role data
     try:
         member = await reaction.message.guild.fetch_member(user.id)
@@ -7001,7 +7003,7 @@ async def on_reaction_add(reaction, user):
     # Log detailed information to giveaway debug channel
     role_check_result = "UNKNOWN"
     user_roles_list = []
-    
+
     if member:
         user_roles_list = [role.name for role in member.roles]
         if required_role:
@@ -7019,20 +7021,18 @@ async def on_reaction_add(reaction, user):
         f"👤 **User:** {user.name} ({user.mention})\n"
         f"🎭 **Required Role:** {required_role.name if required_role else 'NOT FOUND'} (ID: {giveaway_data['required_role_id']})\n"
         f"🏷️ **User Roles:** {', '.join(user_roles_list) if user_roles_list else 'None'}\n"
-        f"✔️ **Role Check:** {role_check_result}"
-    )
+        f"✔️ **Role Check:** {role_check_result}")
 
     if not member or not required_role or required_role not in member.roles:
         # Remove their reaction and send DM with detailed level information
         try:
             await reaction.remove(user)
-            
+
             # Log rejection to giveaway debug channel
             await bot.log_giveaway_event(
                 f"🚫 **Entry REJECTED** for {user.mention}\n"
                 f"Giveaway ID: `{giveaway_id}`\n"
-                f"Reason: Missing required role or member/role not found"
-            )
+                f"Reason: Missing required role or member/role not found")
 
             # Get user's current level information
             user_id_str = str(user.id)
@@ -7064,7 +7064,7 @@ async def on_reaction_add(reaction, user):
 
                 level_progress_text = (
                     f"You are currently **{current_level_text}**. "
-                    f"You need **{messages_remaining}** more chats to get to **Level {next_level}**."
+                    f"You need to send **{messages_remaining}** more chats in <#1384795868670201997> to get to **Level {next_level}**."
                 )
             else:
                 # User is at max level or beyond
@@ -7077,18 +7077,17 @@ async def on_reaction_add(reaction, user):
         except (discord.Forbidden, discord.NotFound):
             pass  # Can't DM user or remove reaction
         return
-    
+
     # User has the required role - add them to participants if not already added
     if user.id not in giveaway_data['participants']:
         giveaway_data['participants'].append(user.id)
         await bot.save_giveaway_to_db(giveaway_id, giveaway_data)
-        
+
         # Log successful entry to giveaway debug channel
         await bot.log_giveaway_event(
             f"✅ **Entry ACCEPTED** for {user.mention}\n"
             f"Giveaway ID: `{giveaway_id}`\n"
-            f"Total Participants: {len(giveaway_data['participants'])}"
-        )
+            f"Total Participants: {len(giveaway_data['participants'])}")
 
 
 # Stats command removed as per user request
@@ -7099,7 +7098,7 @@ async def on_reaction_add(reaction, user):
                   description="Check the stored data for a giveaway")
 @app_commands.describe(giveaway_id="The giveaway ID to check")
 async def check_giveaway_command(interaction: discord.Interaction,
-                                  giveaway_id: str):
+                                 giveaway_id: str):
     """Check what data is stored for a giveaway"""
     if not await owner_check(interaction):
         return
@@ -7112,58 +7111,58 @@ async def check_giveaway_command(interaction: discord.Interaction,
             return
 
         giveaway_data = ACTIVE_GIVEAWAYS[giveaway_id]
-        
+
         # Get the role name
         required_role_id = giveaway_data['required_role_id']
         guild = interaction.guild
         required_role = guild.get_role(required_role_id) if guild else None
-        
+
         # Get participant details
         participant_count = len(giveaway_data.get('participants', []))
         participant_ids = giveaway_data.get('participants', [])
-        
-        embed = discord.Embed(
-            title=f"🔍 Giveaway Data: {giveaway_id}",
-            color=discord.Color.blue())
-        
-        embed.add_field(
-            name="Message ID",
-            value=str(giveaway_data['message_id']),
-            inline=False)
+
+        embed = discord.Embed(title=f"🔍 Giveaway Data: {giveaway_id}",
+                              color=discord.Color.blue())
+
+        embed.add_field(name="Message ID",
+                        value=str(giveaway_data['message_id']),
+                        inline=False)
         embed.add_field(
             name="Required Role ID",
-            value=f"{required_role_id} ({required_role.name if required_role else '⚠️ Role not found'})",
+            value=
+            f"{required_role_id} ({required_role.name if required_role else '⚠️ Role not found'})",
             inline=False)
-        embed.add_field(
-            name="Winner Count",
-            value=str(giveaway_data['winner_count']),
-            inline=True)
-        embed.add_field(
-            name="Participants",
-            value=str(participant_count),
-            inline=True)
+        embed.add_field(name="Winner Count",
+                        value=str(giveaway_data['winner_count']),
+                        inline=True)
+        embed.add_field(name="Participants",
+                        value=str(participant_count),
+                        inline=True)
         embed.add_field(
             name="End Time",
             value=f"<t:{int(giveaway_data['end_time'].timestamp())}:F>",
             inline=False)
-        
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        
+
         # Also log detailed information to giveaway debug channel
         participants_list = []
         if guild and participant_ids:
             for user_id in participant_ids[:10]:  # Show first 10
                 member = guild.get_member(user_id)
                 if member:
-                    participants_list.append(f"- {member.name} ({member.mention})")
+                    participants_list.append(
+                        f"- {member.name} ({member.mention})")
                 else:
                     participants_list.append(f"- Unknown User (ID: {user_id})")
-            
+
             if len(participant_ids) > 10:
-                participants_list.append(f"... and {len(participant_ids) - 10} more")
-        
-        participants_text = "\n".join(participants_list) if participants_list else "No participants yet"
-        
+                participants_list.append(
+                    f"... and {len(participant_ids) - 10} more")
+
+        participants_text = "\n".join(
+            participants_list) if participants_list else "No participants yet"
+
         await bot.log_giveaway_event(
             f"**🔍 Giveaway Check Command Used**\n"
             f"📝 **Giveaway ID:** `{giveaway_id}`\n"
@@ -7173,8 +7172,7 @@ async def check_giveaway_command(interaction: discord.Interaction,
             f"👥 **Total Participants:** {participant_count}\n"
             f"⏰ **End Time:** <t:{int(giveaway_data['end_time'].timestamp())}:F>\n"
             f"👤 **Checked by:** {interaction.user.mention}\n\n"
-            f"**Participants:**\n{participants_text}"
-        )
+            f"**Participants:**\n{participants_text}")
 
     except Exception as e:
         await interaction.response.send_message(
