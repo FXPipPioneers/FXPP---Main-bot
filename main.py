@@ -6958,6 +6958,7 @@ async def on_reaction_add(reaction, user):
             break
 
     if not giveaway_id:
+        # This reaction is not for a tracked giveaway, ignore it
         return
 
     giveaway_data = ACTIVE_GIVEAWAYS[giveaway_id]
@@ -6966,6 +6967,15 @@ async def on_reaction_add(reaction, user):
     required_role = reaction.message.guild.get_role(
         giveaway_data['required_role_id'])
     member = reaction.message.guild.get_member(user.id)
+
+    # Debug logging to help diagnose role verification issues
+    print(f"[GIVEAWAY DEBUG] User {user.name} ({user.id}) reacted to giveaway {giveaway_id}")
+    print(f"[GIVEAWAY DEBUG] Required role ID: {giveaway_data['required_role_id']}")
+    print(f"[GIVEAWAY DEBUG] Required role found: {required_role.name if required_role else 'None'}")
+    print(f"[GIVEAWAY DEBUG] Member found: {member is not None}")
+    if member:
+        print(f"[GIVEAWAY DEBUG] Member roles: {[role.name for role in member.roles]}")
+        print(f"[GIVEAWAY DEBUG] Has required role: {required_role in member.roles if required_role else 'N/A'}")
 
     if not member or not required_role or required_role not in member.roles:
         # Remove their reaction and send DM with detailed level information
@@ -7018,6 +7028,63 @@ async def on_reaction_add(reaction, user):
 
 
 # Stats command removed as per user request
+
+
+# ===== CHECK GIVEAWAY DATA COMMAND =====
+@bot.tree.command(name="checkgiveaway",
+                  description="Check the stored data for a giveaway")
+@app_commands.describe(giveaway_id="The giveaway ID to check")
+async def check_giveaway_command(interaction: discord.Interaction,
+                                  giveaway_id: str):
+    """Check what data is stored for a giveaway"""
+    if not await owner_check(interaction):
+        return
+
+    try:
+        if giveaway_id not in ACTIVE_GIVEAWAYS:
+            await interaction.response.send_message(
+                f"❌ Giveaway `{giveaway_id}` is not currently being tracked.",
+                ephemeral=True)
+            return
+
+        giveaway_data = ACTIVE_GIVEAWAYS[giveaway_id]
+        
+        # Get the role name
+        required_role_id = giveaway_data['required_role_id']
+        guild = interaction.guild
+        required_role = guild.get_role(required_role_id) if guild else None
+        
+        embed = discord.Embed(
+            title=f"🔍 Giveaway Data: {giveaway_id}",
+            color=discord.Color.blue())
+        
+        embed.add_field(
+            name="Message ID",
+            value=str(giveaway_data['message_id']),
+            inline=False)
+        embed.add_field(
+            name="Required Role ID",
+            value=f"{required_role_id} ({required_role.name if required_role else '⚠️ Role not found'})",
+            inline=False)
+        embed.add_field(
+            name="Winner Count",
+            value=str(giveaway_data['winner_count']),
+            inline=True)
+        embed.add_field(
+            name="Participants",
+            value=str(len(giveaway_data.get('participants', []))),
+            inline=True)
+        embed.add_field(
+            name="End Time",
+            value=f"<t:{int(giveaway_data['end_time'].timestamp())}:F>",
+            inline=False)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Error checking giveaway: {str(e)}", ephemeral=True)
+        print(f"Error checking giveaway: {e}")
 
 
 # ===== RESTORE GIVEAWAY COMMAND =====
