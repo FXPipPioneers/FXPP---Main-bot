@@ -1251,6 +1251,24 @@ class TradingBot(commands.Bot):
                     )
                 ''')
 
+                # Active giveaways table for persistent giveaway storage
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS active_giveaways (
+                        giveaway_id VARCHAR(50) PRIMARY KEY,
+                        message_id BIGINT NOT NULL,
+                        channel_id BIGINT NOT NULL,
+                        creator_id BIGINT NOT NULL,
+                        required_role_id BIGINT NOT NULL,
+                        winner_count INTEGER NOT NULL,
+                        end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                        participants TEXT DEFAULT '',
+                        chosen_winners TEXT DEFAULT '',
+                        message_text TEXT NOT NULL,
+                        guild_id BIGINT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                ''')
+
             print("✅ Database tables initialized")
 
             # Load existing config from database
@@ -1269,6 +1287,12 @@ class TradingBot(commands.Bot):
             await self.load_active_trades_from_db()
             print(
                 f"✅ Loaded {len(PRICE_TRACKING_CONFIG['active_trades'])} active trades from database"
+            )
+
+            # Load active giveaways from database for persistence
+            await self.load_giveaways_from_db()
+            print(
+                f"✅ Loaded {len(ACTIVE_GIVEAWAYS)} active giveaways from database"
             )
 
         except Exception as e:
@@ -2327,6 +2351,149 @@ class TradingBot(commands.Bot):
 
         except Exception as e:
             print(f"❌ Error loading invite tracking from database: {str(e)}")
+
+    async def save_giveaway_to_db(self, giveaway_id: str, giveaway_data: dict):
+        """Save a giveaway to database for persistence across bot restarts"""
+        if not self.db_pool:
+            return
+
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Convert datetime objects to ensure they're timezone-aware
+                end_time = giveaway_data['end_time']
+                if isinstance(end_time, str):
+                    end_time = datetime.fromisoformat(end_time)
+                if end_time.tzinfo is None:
+                    end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
+
+                # Convert lists to comma-separated strings for storage
+                participants_str = ','.join(str(p) for p in giveaway_data.get('participants', []))
+                chosen_winners_str = ','.join(str(w) for w in giveaway_data.get('chosen_winners', []))
+
+                # Get message text from settings
+                message_text = giveaway_data.get('settings', {}).get('message', '')
+
+                # Get guild_id from channel or settings
+                guild_id = giveaway_data.get('guild_id')
+                if not guild_id:
+                    channel = self.get_channel(giveaway_data['channel_id'])
+                    guild_id = channel.guild.id if channel else 0
+
+                await conn.execute(
+                    '''
+                    INSERT INTO active_giveaways 
+                    (giveaway_id, message_id, channel_id, creator_id, required_role_id, 
+                     winner_count, end_time, participants, chosen_winners, message_text, guild_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ON CONFLICT (giveaway_id) DO UPDATE SET
+                        participants = $8,
+                        chosen_winners = $9
+                    ''',
+                    giveaway_id,
+                    giveaway_data['message_id'],
+                    giveaway_data['channel_id'],
+                    giveaway_data['creator_id'],
+                    giveaway_data['required_role_id'],
+                    giveaway_data['winner_count'],
+                    end_time,
+                    participants_str,
+                    chosen_winners_str,
+                    message_text,
+                    guild_id
+                )
+
+                print(f"✅ Saved giveaway {giveaway_id} to database")
+
+        except Exception as e:
+            print(f"❌ Error saving giveaway to database: {str(e)}")
+            await self.log_to_discord(f"❌ Error saving giveaway {giveaway_id} to database: {str(e)}")
+
+    async def load_giveaways_from_db(self):
+        """Load active giveaways from database for persistence across bot restarts"""
+        if not self.db_pool:
+            return
+
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Clear existing in-memory giveaways first to avoid duplicates
+                ACTIVE_GIVEAWAYS.clear()
+
+                # Load all active giveaways that haven't ended yet
+                current_time = datetime.now(AMSTERDAM_TZ)
+                rows = await conn.fetch(
+                    'SELECT * FROM active_giveaways WHERE end_time > $1 ORDER BY created_at DESC',
+                    current_time
+                )
+
+                loaded_count = 0
+                for row in rows:
+                    giveaway_id = row['giveaway_id']
+                    
+                    # Convert database row to giveaway_data format
+                    participants = []
+                    if row['participants']:
+                        participants = [int(p) for p in row['participants'].split(',') if p]
+                    
+                    chosen_winners = []
+                    if row['chosen_winners']:
+                        chosen_winners = [int(w) for w in row['chosen_winners'].split(',') if w]
+
+                    # Reconstruct end_time as timezone-aware datetime
+                    end_time = row['end_time']
+                    if end_time.tzinfo is None:
+                        end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
+
+                    # Reconstruct giveaway data structure
+                    giveaway_data = {
+                        'message_id': row['message_id'],
+                        'channel_id': row['channel_id'],
+                        'creator_id': row['creator_id'],
+                        'required_role_id': row['required_role_id'],
+                        'winner_count': row['winner_count'],
+                        'end_time': end_time,
+                        'participants': participants,
+                        'chosen_winners': chosen_winners,
+                        'guild_id': row['guild_id'],
+                        'settings': {
+                            'message': row['message_text'],
+                            'winners': row['winner_count']
+                        }
+                    }
+
+                    # Store in memory
+                    ACTIVE_GIVEAWAYS[giveaway_id] = giveaway_data
+
+                    # Reschedule the giveaway end
+                    asyncio.create_task(schedule_giveaway_end(giveaway_id))
+
+                    loaded_count += 1
+                    print(f"✅ Loaded giveaway {giveaway_id} (ends in {(end_time - current_time).total_seconds() / 3600:.1f} hours)")
+
+                if loaded_count > 0:
+                    print(f"✅ Loaded {loaded_count} active giveaways from database")
+                    await self.log_to_discord(f"🎉 Loaded {loaded_count} active giveaways from database")
+                else:
+                    print("📋 No active giveaways found in database")
+
+        except Exception as e:
+            print(f"❌ Error loading giveaways from database: {str(e)}")
+            await self.log_to_discord(f"❌ Error loading giveaways from database: {str(e)}")
+
+    async def remove_giveaway_from_db(self, giveaway_id: str):
+        """Remove a giveaway from database when it ends"""
+        if not self.db_pool:
+            return
+
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute(
+                    'DELETE FROM active_giveaways WHERE giveaway_id = $1',
+                    giveaway_id
+                )
+                print(f"✅ Removed giveaway {giveaway_id} from database")
+
+        except Exception as e:
+            print(f"❌ Error removing giveaway from database: {str(e)}")
 
     async def load_active_trades_from_db(self):
         """Load active trading signals from database for 24/7 persistence"""
@@ -6391,6 +6558,10 @@ class ChooseWinnerView(discord.ui.View):
                 return
 
             ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user_id)
+            
+            # Update database with new chosen winner
+            await bot.save_giveaway_to_db(giveaway_id, ACTIVE_GIVEAWAYS[giveaway_id])
+            
             embed = discord.Embed(
                 title="✅ User Selected",
                 description=
@@ -6584,6 +6755,7 @@ async def create_giveaway(interaction, settings):
         ACTIVE_GIVEAWAYS[giveaway_id] = {
             'message_id': message.id,
             'channel_id': GIVEAWAY_CHANNEL_ID,
+            'guild_id': giveaway_channel.guild.id,
             'creator_id': interaction.user.id,
             'required_role_id': settings['role'].id,
             'winner_count': settings['winners'],
@@ -6592,6 +6764,9 @@ async def create_giveaway(interaction, settings):
             'chosen_winners': [],
             'settings': settings
         }
+
+        # Save giveaway to database for persistence across bot restarts
+        await bot.save_giveaway_to_db(giveaway_id, ACTIVE_GIVEAWAYS[giveaway_id])
 
         # Log to bot log channel with giveaway ID
         await bot.log_to_discord(
@@ -6760,6 +6935,9 @@ async def end_giveaway(giveaway_id, interaction=None):
         # Remove from active giveaways
         del ACTIVE_GIVEAWAYS[giveaway_id]
 
+        # Remove from database
+        await bot.remove_giveaway_from_db(giveaway_id)
+
         if interaction:
             await interaction.followup.send(
                 f"✅ Giveaway `{giveaway_id}` ended successfully!\n" +
@@ -6851,6 +7029,133 @@ async def on_reaction_add(reaction, user):
 
 
 # Stats command removed as per user request
+
+
+# ===== RESTORE GIVEAWAY COMMAND =====
+@bot.tree.command(name="restoregiveaway",
+                  description="Restore a giveaway by message ID")
+@app_commands.describe(
+    message_id="The message ID of the giveaway",
+    giveaway_id="The giveaway ID (e.g., giveaway_1762902912)")
+async def restore_giveaway_command(interaction: discord.Interaction,
+                                    message_id: str,
+                                    giveaway_id: str):
+    """Restore a giveaway from a message ID"""
+    if not await owner_check(interaction):
+        return
+
+    try:
+        await interaction.response.defer(ephemeral=True)
+
+        # Get the giveaway channel
+        giveaway_channel = bot.get_channel(GIVEAWAY_CHANNEL_ID)
+        if not giveaway_channel:
+            await interaction.followup.send(
+                f"❌ Could not find giveaway channel with ID {GIVEAWAY_CHANNEL_ID}",
+                ephemeral=True)
+            return
+
+        # Fetch the message
+        try:
+            message = await giveaway_channel.fetch_message(int(message_id))
+        except (discord.NotFound, ValueError):
+            await interaction.followup.send(
+                f"❌ Could not find message with ID {message_id}",
+                ephemeral=True)
+            return
+
+        # Parse the embed to get giveaway details
+        if not message.embeds or len(message.embeds) == 0:
+            await interaction.followup.send(
+                "❌ Message does not contain an embed. Not a valid giveaway message.",
+                ephemeral=True)
+            return
+
+        embed = message.embeds[0]
+        
+        # Extract information from embed
+        message_text = embed.description or ""
+        
+        # Find required role from embed fields
+        required_role_id = None
+        winner_count = 1
+        end_timestamp = None
+        
+        for field in embed.fields:
+            if "Requirements" in field.name and "required rank" in field.value.lower():
+                # Extract role ID from mention (format: <@&role_id>)
+                import re
+                role_match = re.search(r'<@&(\d+)>', field.value)
+                if role_match:
+                    required_role_id = int(role_match.group(1))
+            elif "Winners" in field.name:
+                # Extract winner count
+                winner_match = re.search(r'(\d+)\s+winner', field.value)
+                if winner_match:
+                    winner_count = int(winner_match.group(1))
+        
+        # Get end time from embed timestamp
+        if embed.timestamp:
+            end_time = embed.timestamp
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
+        else:
+            await interaction.followup.send(
+                "❌ Could not find end time in giveaway embed.",
+                ephemeral=True)
+            return
+
+        if not required_role_id:
+            await interaction.followup.send(
+                "❌ Could not find required role in giveaway embed.",
+                ephemeral=True)
+            return
+
+        # Create giveaway data structure
+        giveaway_data = {
+            'message_id': message.id,
+            'channel_id': giveaway_channel.id,
+            'guild_id': giveaway_channel.guild.id,
+            'creator_id': interaction.user.id,
+            'required_role_id': required_role_id,
+            'winner_count': winner_count,
+            'end_time': end_time,
+            'participants': [],
+            'chosen_winners': [],
+            'settings': {
+                'message': message_text,
+                'winners': winner_count
+            }
+        }
+
+        # Store in memory and database
+        ACTIVE_GIVEAWAYS[giveaway_id] = giveaway_data
+        await bot.save_giveaway_to_db(giveaway_id, giveaway_data)
+
+        # Schedule the giveaway to end
+        asyncio.create_task(schedule_giveaway_end(giveaway_id))
+
+        # Log the restoration
+        await bot.log_to_discord(
+            f"**Giveaway Restored** 🔄\n"
+            f"ID: `{giveaway_id}`\n"
+            f"Message ID: {message_id}\n"
+            f"End time: <t:{int(end_time.timestamp())}:F>\n"
+            f"Winners: {winner_count}\n"
+            f"Restored by: {interaction.user.mention}")
+
+        await interaction.followup.send(
+            f"✅ **Giveaway restored successfully!**\n" +
+            f"🎯 **Giveaway ID:** `{giveaway_id}`\n" +
+            f"📍 **Channel:** {giveaway_channel.mention}\n" +
+            f"⏰ **Ends:** <t:{int(end_time.timestamp())}:R>\n" +
+            f"🏆 **Winners:** {winner_count}",
+            ephemeral=True)
+
+    except Exception as e:
+        await interaction.followup.send(
+            f"❌ Error restoring giveaway: {str(e)}", ephemeral=True)
+        print(f"Error restoring giveaway: {e}")
 
 
 # ===== DM TRACKING COMMAND =====
