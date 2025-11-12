@@ -7084,7 +7084,6 @@ async def restore_giveaway_command(interaction: discord.Interaction,
         for field in embed.fields:
             if "Requirements" in field.name and "required rank" in field.value.lower():
                 # Extract role ID from mention (format: <@&role_id>)
-                import re
                 role_match = re.search(r'<@&(\d+)>', field.value)
                 if role_match:
                     required_role_id = int(role_match.group(1))
