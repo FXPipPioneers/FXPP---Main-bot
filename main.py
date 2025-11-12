@@ -2578,13 +2578,13 @@ class TradingBot(commands.Bot):
                         "status":
                         row['status'],
                         "tp_hits":
-                        row['tp_hits'].split(',') if row['tp_hits'] else [],
+                        [tp for tp in row['tp_hits'].split(',') if tp] if row['tp_hits'] else [],
                         "breakeven_active":
                         row['breakeven_active'],
                         "entry_type":
                         row.get('entry_type'),  # Add entry_type field
                         "manual_overrides":
-                        row.get('manual_overrides', '').split(',')
+                        [mo for mo in row.get('manual_overrides', '').split(',') if mo]
                         if row.get('manual_overrides') else
                         [],  # Add manual_overrides field
                         "channel_id":
@@ -2810,9 +2810,8 @@ class TradingBot(commands.Bot):
                 ''', message_id)
 
                 if row:
-                    # Convert database row to trade data format
-                    tp_hits_list = row['tp_hits'].split(
-                        ',') if row['tp_hits'] else []
+                    # Convert database row to trade data format (filter out empty strings from split)
+                    tp_hits_list = [tp for tp in row['tp_hits'].split(',') if tp] if row['tp_hits'] else []
                     return {
                         'pair':
                         row['pair'],
@@ -6070,7 +6069,7 @@ async def level_command(interaction: discord.Interaction,
     if current_level > 0:
         status_line = f"🏆 **Level {current_level}** • {message_count:,} messages sent"
     else:
-        status_line = f"📊 **Unranked** • {message_count:,} messages sent"
+        status_line = f"📊 **Level 0** • {message_count:,} messages sent"
 
     embed.add_field(name="Your Status", value=status_line, inline=False)
 
@@ -6992,7 +6991,12 @@ async def on_reaction_add(reaction, user):
     # Check if user has required role
     required_role = reaction.message.guild.get_role(
         giveaway_data['required_role_id'])
-    member = reaction.message.guild.get_member(user.id)
+    
+    # Fetch member fresh from guild to avoid cached role data
+    try:
+        member = await reaction.message.guild.fetch_member(user.id)
+    except (discord.NotFound, discord.HTTPException):
+        member = reaction.message.guild.get_member(user.id)
 
     # Log detailed information to giveaway debug channel
     role_check_result = "UNKNOWN"
@@ -7041,11 +7045,11 @@ async def on_reaction_add(reaction, user):
                 current_level = 0
                 message_count = 0
 
-            # Determine current level name or "Unranked"
+            # Determine current level name or "Level 0"
             if current_level > 0:
                 current_level_text = f"Level {current_level}"
             else:
-                current_level_text = "Unranked"
+                current_level_text = "Level 0"
 
             # Calculate next level and messages needed
             next_level = current_level + 1
