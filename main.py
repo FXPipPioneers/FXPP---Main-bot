@@ -102,6 +102,9 @@ GIVEAWAY_CHANNEL_ID = 1405490561963786271
 # Debug channel ID for system debug messages
 DEBUG_CHANNEL_ID = 1414220633029611582
 
+# Giveaway debug channel ID for all giveaway-related logs
+GIVEAWAY_DEBUG_CHANNEL_ID = 1438105795970732103
+
 # Global storage for active giveaways
 ACTIVE_GIVEAWAYS = {}  # giveaway_id: {message_id, participants, settings, etc}
 
@@ -198,6 +201,17 @@ class TradingBot(commands.Bot):
                 print(f"Failed to send log to Discord: {e}")
         # Always print to console as backup
         print(message)
+
+    async def log_giveaway_event(self, message):
+        """Send giveaway-related log message to giveaway debug channel"""
+        giveaway_debug_channel = self.get_channel(GIVEAWAY_DEBUG_CHANNEL_ID)
+        if giveaway_debug_channel:
+            try:
+                await giveaway_debug_channel.send(f"🎁 **Giveaway Log:** {message}")
+            except Exception as e:
+                print(f"Failed to send giveaway log to Discord: {e}")
+        # Always print to console as backup
+        print(f"[GIVEAWAY] {message}")
 
     async def close(self):
         """Cleanup when bot shuts down"""
@@ -1716,12 +1730,14 @@ class TradingBot(commands.Bot):
 
                         # Schedule the DM using asyncio
                         async def send_delayed_dm():
-                            import asyncio
+                            await self.log_to_discord(
+                                f"⏰ Scheduled welcome DM for {member.display_name} - will send in {delay_minutes} minutes"
+                            )
                             await asyncio.sleep(delay_minutes * 60)
                             try:
                                 await member.send(WELCOME_DM_MESSAGE)
                                 await self.log_to_discord(
-                                    f"✅ Sent welcome DM to {member.display_name}"
+                                    f"✅ Sent welcome DM to {member.display_name} after {delay_minutes} minute delay"
                                 )
                             except discord.Forbidden:
                                 await self.log_to_discord(
@@ -1732,8 +1748,8 @@ class TradingBot(commands.Bot):
                                     f"❌ Error sending welcome DM to {member.display_name}: {str(e)}"
                                 )
 
-                        # Start the task in the background
-                        self.loop.create_task(send_delayed_dm())
+                        # Start the task in the background using asyncio.create_task
+                        asyncio.create_task(send_delayed_dm())
 
             # Handle auto-role (only if enabled)
             if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG[
@@ -6757,15 +6773,18 @@ async def create_giveaway(interaction, settings):
         await bot.save_giveaway_to_db(giveaway_id,
                                       ACTIVE_GIVEAWAYS[giveaway_id])
 
-        # Log to bot log channel with giveaway ID
-        await bot.log_to_discord(
-            f"**Giveaway Created** 🎉\n"
-            f"ID: `{giveaway_id}`\n"
-            f"Message: {settings['message'][:100]}{'...' if len(settings['message']) > 100 else ''}\n"
-            f"Winners: {settings['winners']}\n"
-            f"End of the giveaway: <t:{int(end_time.timestamp())}:F>\n"
-            f"Required Role: {settings['role'].mention}\n"
-            f"Creator: {interaction.user.mention}")
+        # Log to giveaway debug channel
+        await bot.log_giveaway_event(
+            f"**🎉 NEW GIVEAWAY CREATED**\n"
+            f"📝 **Giveaway ID:** `{giveaway_id}`\n"
+            f"💬 **Message ID:** {message.id}\n"
+            f"📄 **Message:** {settings['message'][:200]}{'...' if len(settings['message']) > 200 else ''}\n"
+            f"🏆 **Winners:** {settings['winners']}\n"
+            f"⏰ **End Time:** <t:{int(end_time.timestamp())}:F> (<t:{int(end_time.timestamp())}:R>)\n"
+            f"🎭 **Required Role:** {settings['role'].mention} (ID: {settings['role'].id})\n"
+            f"👤 **Created by:** {interaction.user.mention}\n"
+            f"📍 **Channel:** {giveaway_channel.mention}"
+        )
 
         # Clear temp settings
         if hasattr(bot, '_temp_giveaway'):
@@ -6905,21 +6924,28 @@ async def end_giveaway(giveaway_id, interaction=None):
         # Send winner announcement
         await channel.send(embed=embed)
 
-        # Log to bot log channel with giveaway ID
+        # Log to giveaway debug channel
         if final_winners:
-            winner_names = [winner.display_name for winner in final_winners]
-            await bot.log_to_discord(
-                f"**Giveaway Ended** 🏆\n"
-                f"ID: `{giveaway_id}`\n"
-                f"Winners: {', '.join(winner_names)}\n"
-                f"Total Participants: {len(valid_participants) + len(final_winners)}\n"
-                f"Channel: {channel.mention}")
+            winner_mentions = [winner.mention for winner in final_winners]
+            await bot.log_giveaway_event(
+                f"**🏆 GIVEAWAY ENDED - WINNERS SELECTED**\n"
+                f"📝 **Giveaway ID:** `{giveaway_id}`\n"
+                f"💬 **Message ID:** {message.id}\n"
+                f"🎉 **Winners:** {', '.join(winner_mentions)}\n"
+                f"👥 **Total Valid Participants:** {len(valid_participants) + len(final_winners)}\n"
+                f"🏅 **Winners Selected:** {len(final_winners)}\n"
+                f"🎭 **Required Role:** {required_role.name if required_role else 'Unknown'} (ID: {giveaway_data['required_role_id']})\n"
+                f"📍 **Channel:** {channel.mention}"
+            )
         else:
-            await bot.log_to_discord(
-                f"**Giveaway Ended** 😔\n"
-                f"ID: `{giveaway_id}`\n"
-                f"No Winners - No valid participants found\n"
-                f"Channel: {channel.mention}")
+            await bot.log_giveaway_event(
+                f"**😔 GIVEAWAY ENDED - NO WINNERS**\n"
+                f"📝 **Giveaway ID:** `{giveaway_id}`\n"
+                f"💬 **Message ID:** {message.id}\n"
+                f"⚠️ **Reason:** No valid participants found or no one had the required role\n"
+                f"🎭 **Required Role:** {required_role.name if required_role else 'Unknown'} (ID: {giveaway_data['required_role_id']})\n"
+                f"📍 **Channel:** {channel.mention}"
+            )
 
         # Remove from active giveaways
         del ACTIVE_GIVEAWAYS[giveaway_id]
@@ -6968,19 +6994,41 @@ async def on_reaction_add(reaction, user):
         giveaway_data['required_role_id'])
     member = reaction.message.guild.get_member(user.id)
 
-    # Debug logging to help diagnose role verification issues
-    print(f"[GIVEAWAY DEBUG] User {user.name} ({user.id}) reacted to giveaway {giveaway_id}")
-    print(f"[GIVEAWAY DEBUG] Required role ID: {giveaway_data['required_role_id']}")
-    print(f"[GIVEAWAY DEBUG] Required role found: {required_role.name if required_role else 'None'}")
-    print(f"[GIVEAWAY DEBUG] Member found: {member is not None}")
+    # Log detailed information to giveaway debug channel
+    role_check_result = "UNKNOWN"
+    user_roles_list = []
+    
     if member:
-        print(f"[GIVEAWAY DEBUG] Member roles: {[role.name for role in member.roles]}")
-        print(f"[GIVEAWAY DEBUG] Has required role: {required_role in member.roles if required_role else 'N/A'}")
+        user_roles_list = [role.name for role in member.roles]
+        if required_role:
+            has_role = required_role in member.roles
+            role_check_result = "PASSED ✅" if has_role else "FAILED ❌"
+        else:
+            role_check_result = "FAILED ❌ (Role not found)"
+    else:
+        role_check_result = "FAILED ❌ (Member not found)"
+
+    # Log to giveaway debug channel
+    await bot.log_giveaway_event(
+        f"**Giveaway Entry Attempt**\n"
+        f"📝 **Giveaway ID:** `{giveaway_id}`\n"
+        f"👤 **User:** {user.name} ({user.mention})\n"
+        f"🎭 **Required Role:** {required_role.name if required_role else 'NOT FOUND'} (ID: {giveaway_data['required_role_id']})\n"
+        f"🏷️ **User Roles:** {', '.join(user_roles_list) if user_roles_list else 'None'}\n"
+        f"✔️ **Role Check:** {role_check_result}"
+    )
 
     if not member or not required_role or required_role not in member.roles:
         # Remove their reaction and send DM with detailed level information
         try:
             await reaction.remove(user)
+            
+            # Log rejection to giveaway debug channel
+            await bot.log_giveaway_event(
+                f"🚫 **Entry REJECTED** for {user.mention}\n"
+                f"Giveaway ID: `{giveaway_id}`\n"
+                f"Reason: Missing required role or member/role not found"
+            )
 
             # Get user's current level information
             user_id_str = str(user.id)
@@ -7025,6 +7073,18 @@ async def on_reaction_add(reaction, user):
         except (discord.Forbidden, discord.NotFound):
             pass  # Can't DM user or remove reaction
         return
+    
+    # User has the required role - add them to participants if not already added
+    if user.id not in giveaway_data['participants']:
+        giveaway_data['participants'].append(user.id)
+        await bot.save_giveaway_to_db(giveaway_id, giveaway_data)
+        
+        # Log successful entry to giveaway debug channel
+        await bot.log_giveaway_event(
+            f"✅ **Entry ACCEPTED** for {user.mention}\n"
+            f"Giveaway ID: `{giveaway_id}`\n"
+            f"Total Participants: {len(giveaway_data['participants'])}"
+        )
 
 
 # Stats command removed as per user request
@@ -7054,6 +7114,10 @@ async def check_giveaway_command(interaction: discord.Interaction,
         guild = interaction.guild
         required_role = guild.get_role(required_role_id) if guild else None
         
+        # Get participant details
+        participant_count = len(giveaway_data.get('participants', []))
+        participant_ids = giveaway_data.get('participants', [])
+        
         embed = discord.Embed(
             title=f"🔍 Giveaway Data: {giveaway_id}",
             color=discord.Color.blue())
@@ -7072,7 +7136,7 @@ async def check_giveaway_command(interaction: discord.Interaction,
             inline=True)
         embed.add_field(
             name="Participants",
-            value=str(len(giveaway_data.get('participants', []))),
+            value=str(participant_count),
             inline=True)
         embed.add_field(
             name="End Time",
@@ -7080,6 +7144,33 @@ async def check_giveaway_command(interaction: discord.Interaction,
             inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        # Also log detailed information to giveaway debug channel
+        participants_list = []
+        if guild and participant_ids:
+            for user_id in participant_ids[:10]:  # Show first 10
+                member = guild.get_member(user_id)
+                if member:
+                    participants_list.append(f"- {member.name} ({member.mention})")
+                else:
+                    participants_list.append(f"- Unknown User (ID: {user_id})")
+            
+            if len(participant_ids) > 10:
+                participants_list.append(f"... and {len(participant_ids) - 10} more")
+        
+        participants_text = "\n".join(participants_list) if participants_list else "No participants yet"
+        
+        await bot.log_giveaway_event(
+            f"**🔍 Giveaway Check Command Used**\n"
+            f"📝 **Giveaway ID:** `{giveaway_id}`\n"
+            f"💬 **Message ID:** {giveaway_data['message_id']}\n"
+            f"🎭 **Required Role:** {required_role.name if required_role else 'NOT FOUND'} (ID: {required_role_id})\n"
+            f"🏆 **Winner Count:** {giveaway_data['winner_count']}\n"
+            f"👥 **Total Participants:** {participant_count}\n"
+            f"⏰ **End Time:** <t:{int(giveaway_data['end_time'].timestamp())}:F>\n"
+            f"👤 **Checked by:** {interaction.user.mention}\n\n"
+            f"**Participants:**\n{participants_text}"
+        )
 
     except Exception as e:
         await interaction.response.send_message(
