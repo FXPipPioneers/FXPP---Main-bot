@@ -1903,7 +1903,7 @@ class TradingBot(commands.Bot):
                     weekday_message = (
                         "**:star2: Welcome to FX Pip Pioneers! :star2:**\n\n"
                         ":white_check_mark: As a welcome gift, we've given you access to our **Premium Signals channel for 24 hours.** "
-                        "That means you can start profiting from the **8–10 trade signals** we send per day right now!\n\n"
+                        "That means that you can immediately start profiting from the **6+ trade signals** we send per day in <#1384668129036075109>!\n\n"
                         "***This is your shot at consistency, clarity, and growth in trading. Let's level up together!***"
                     )
                     await member.send(weekday_message)
@@ -2367,11 +2367,14 @@ class TradingBot(commands.Bot):
                     end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
 
                 # Convert lists to comma-separated strings for storage
-                participants_str = ','.join(str(p) for p in giveaway_data.get('participants', []))
-                chosen_winners_str = ','.join(str(w) for w in giveaway_data.get('chosen_winners', []))
+                participants_str = ','.join(
+                    str(p) for p in giveaway_data.get('participants', []))
+                chosen_winners_str = ','.join(
+                    str(w) for w in giveaway_data.get('chosen_winners', []))
 
                 # Get message text from settings
-                message_text = giveaway_data.get('settings', {}).get('message', '')
+                message_text = giveaway_data.get('settings',
+                                                 {}).get('message', '')
 
                 # Get guild_id from channel or settings
                 guild_id = giveaway_data.get('guild_id')
@@ -2388,25 +2391,18 @@ class TradingBot(commands.Bot):
                     ON CONFLICT (giveaway_id) DO UPDATE SET
                         participants = $8,
                         chosen_winners = $9
-                    ''',
-                    giveaway_id,
-                    giveaway_data['message_id'],
-                    giveaway_data['channel_id'],
-                    giveaway_data['creator_id'],
+                    ''', giveaway_id, giveaway_data['message_id'],
+                    giveaway_data['channel_id'], giveaway_data['creator_id'],
                     giveaway_data['required_role_id'],
-                    giveaway_data['winner_count'],
-                    end_time,
-                    participants_str,
-                    chosen_winners_str,
-                    message_text,
-                    guild_id
-                )
+                    giveaway_data['winner_count'], end_time, participants_str,
+                    chosen_winners_str, message_text, guild_id)
 
                 print(f"✅ Saved giveaway {giveaway_id} to database")
 
         except Exception as e:
             print(f"❌ Error saving giveaway to database: {str(e)}")
-            await self.log_to_discord(f"❌ Error saving giveaway {giveaway_id} to database: {str(e)}")
+            await self.log_to_discord(
+                f"❌ Error saving giveaway {giveaway_id} to database: {str(e)}")
 
     async def load_giveaways_from_db(self):
         """Load active giveaways from database for persistence across bot restarts"""
@@ -2422,21 +2418,25 @@ class TradingBot(commands.Bot):
                 current_time = datetime.now(AMSTERDAM_TZ)
                 rows = await conn.fetch(
                     'SELECT * FROM active_giveaways WHERE end_time > $1 ORDER BY created_at DESC',
-                    current_time
-                )
+                    current_time)
 
                 loaded_count = 0
                 for row in rows:
                     giveaway_id = row['giveaway_id']
-                    
+
                     # Convert database row to giveaway_data format
                     participants = []
                     if row['participants']:
-                        participants = [int(p) for p in row['participants'].split(',') if p]
-                    
+                        participants = [
+                            int(p) for p in row['participants'].split(',') if p
+                        ]
+
                     chosen_winners = []
                     if row['chosen_winners']:
-                        chosen_winners = [int(w) for w in row['chosen_winners'].split(',') if w]
+                        chosen_winners = [
+                            int(w) for w in row['chosen_winners'].split(',')
+                            if w
+                        ]
 
                     # Reconstruct end_time as timezone-aware datetime
                     end_time = row['end_time']
@@ -2467,17 +2467,24 @@ class TradingBot(commands.Bot):
                     asyncio.create_task(schedule_giveaway_end(giveaway_id))
 
                     loaded_count += 1
-                    print(f"✅ Loaded giveaway {giveaway_id} (ends in {(end_time - current_time).total_seconds() / 3600:.1f} hours)")
+                    print(
+                        f"✅ Loaded giveaway {giveaway_id} (ends in {(end_time - current_time).total_seconds() / 3600:.1f} hours)"
+                    )
 
                 if loaded_count > 0:
-                    print(f"✅ Loaded {loaded_count} active giveaways from database")
-                    await self.log_to_discord(f"🎉 Loaded {loaded_count} active giveaways from database")
+                    print(
+                        f"✅ Loaded {loaded_count} active giveaways from database"
+                    )
+                    await self.log_to_discord(
+                        f"🎉 Loaded {loaded_count} active giveaways from database"
+                    )
                 else:
                     print("📋 No active giveaways found in database")
 
         except Exception as e:
             print(f"❌ Error loading giveaways from database: {str(e)}")
-            await self.log_to_discord(f"❌ Error loading giveaways from database: {str(e)}")
+            await self.log_to_discord(
+                f"❌ Error loading giveaways from database: {str(e)}")
 
     async def remove_giveaway_from_db(self, giveaway_id: str):
         """Remove a giveaway from database when it ends"""
@@ -2488,8 +2495,7 @@ class TradingBot(commands.Bot):
             async with self.db_pool.acquire() as conn:
                 await conn.execute(
                     'DELETE FROM active_giveaways WHERE giveaway_id = $1',
-                    giveaway_id
-                )
+                    giveaway_id)
                 print(f"✅ Removed giveaway {giveaway_id} from database")
 
         except Exception as e:
@@ -6049,7 +6055,7 @@ async def level_command(interaction: discord.Interaction,
         status_line = f"🏆 **Level {current_level}** • {message_count:,} messages sent"
     else:
         status_line = f"📊 **Unranked** • {message_count:,} messages sent"
-    
+
     embed.add_field(name="Your Status", value=status_line, inline=False)
 
     # Progress to next level
@@ -6058,17 +6064,15 @@ async def level_command(interaction: discord.Interaction,
         bar_length = 10
         filled = int((progress_percentage / 100) * bar_length)
         bar = "█" * filled + "░" * (bar_length - filled)
-        
+
         progress_text = (
             f"{bar} **{progress_percentage:.0f}%**\n"
-            f"**{remaining:,}** more messages to reach **Level {next_level}**"
-        )
+            f"**{remaining:,}** more messages to reach **Level {next_level}**")
         embed.add_field(name="Next Level", value=progress_text, inline=False)
     else:
-        embed.add_field(
-            name="🎉 Max Level Reached!",
-            value="You've achieved the highest level!",
-            inline=False)
+        embed.add_field(name="🎉 Max Level Reached!",
+                        value="You've achieved the highest level!",
+                        inline=False)
 
     embed.set_footer(text="Keep chatting to level up!")
 
@@ -6078,6 +6082,7 @@ async def level_command(interaction: discord.Interaction,
 # Welcome DM Command
 # Hardcoded welcome message
 WELCOME_DM_MESSAGE = "Hey 👋, There's currently an active giveaway in <#1405490561963786271>. Don't forget to join! 🎉"
+
 
 @bot.tree.command(
     name="welcomedm",
@@ -6103,7 +6108,8 @@ async def welcome_dm_command(interaction: discord.Interaction,
                     result = await conn.fetchrow(
                         'SELECT * FROM welcome_dm_config WHERE id = 1')
                     if not result:
-                        await conn.execute('''
+                        await conn.execute(
+                            '''
                             INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
                             VALUES (1, TRUE, 5, $1)
                         ''', WELCOME_DM_MESSAGE)
@@ -6256,16 +6262,14 @@ class GiveawayActionDropdown(discord.ui.Select):
                 description="View all currently running giveaways",
                 value="list",
                 emoji="📋"),
-            discord.SelectOption(
-                label="User",
-                description="Select a user for a giveaway",
-                value="choose_winner",
-                emoji="🎯"),
-            discord.SelectOption(
-                label="End Giveaway",
-                description="End a giveaway early",
-                value="end",
-                emoji="🏁")
+            discord.SelectOption(label="User",
+                                 description="Select a user for a giveaway",
+                                 value="choose_winner",
+                                 emoji="🎯"),
+            discord.SelectOption(label="End Giveaway",
+                                 description="End a giveaway early",
+                                 value="end",
+                                 emoji="🏁")
         ]
 
         super().__init__(placeholder="🎉 Select a giveaway action...",
@@ -6281,9 +6285,10 @@ class GiveawayActionDropdown(discord.ui.Select):
             embed = discord.Embed(
                 title="📝 Create Giveaway - Step 1/2",
                 description="Select the role required to enter this giveaway:",
-                color=discord.Color.blue()
-            )
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+                color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed,
+                                                    view=view,
+                                                    ephemeral=True)
 
         elif action == "list":
             await interaction.response.defer()
@@ -6342,8 +6347,7 @@ class GiveawayActionDropdown(discord.ui.Select):
             view = ChooseWinnerView(ACTIVE_GIVEAWAYS)
             embed = discord.Embed(
                 title="🎯 User Selection",
-                description=
-                "Select a giveaway and then select a user:",
+                description="Select a giveaway and then select a user:",
                 color=discord.Color.blue())
             await interaction.response.send_message(embed=embed,
                                                     view=view,
@@ -6372,12 +6376,12 @@ class GiveawayActionDropdown(discord.ui.Select):
 
 class RoleSelectionView(discord.ui.View):
     """View for selecting required role before creating giveaway"""
-    
+
     def __init__(self, guild):
         super().__init__(timeout=300)
         self.guild = guild
         self.add_item(RoleSelectionDropdown(guild))
-    
+
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -6385,37 +6389,35 @@ class RoleSelectionView(discord.ui.View):
 
 class RoleSelectionDropdown(discord.ui.Select):
     """Dropdown to select required role for giveaway"""
-    
+
     def __init__(self, guild):
-        roles = [role for role in guild.roles if role.name != "@everyone" and not role.managed]
-        
+        roles = [
+            role for role in guild.roles
+            if role.name != "@everyone" and not role.managed
+        ]
+
         options = []
         for role in roles[:25]:
-            options.append(discord.SelectOption(
-                label=role.name,
-                value=str(role.id),
-                description=f"ID: {role.id}"
-            ))
-        
-        super().__init__(
-            placeholder="🎭 Select required role for entry...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
+            options.append(
+                discord.SelectOption(label=role.name,
+                                     value=str(role.id),
+                                     description=f"ID: {role.id}"))
+
+        super().__init__(placeholder="🎭 Select required role for entry...",
+                         min_values=1,
+                         max_values=1,
+                         options=options)
         self.guild = guild
-    
+
     async def callback(self, interaction: discord.Interaction):
         role_id = int(self.values[0])
         role = self.guild.get_role(role_id)
-        
+
         if not role:
             await interaction.response.send_message(
-                "❌ Role not found. Please try again.",
-                ephemeral=True
-            )
+                "❌ Role not found. Please try again.", ephemeral=True)
             return
-        
+
         modal = GiveawayCreateModal(role)
         await interaction.response.send_modal(modal)
 
@@ -6428,24 +6430,20 @@ class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
         placeholder="E.g., Win a $100 Amazon gift card!",
         style=discord.TextStyle.paragraph,
         required=True,
-        max_length=500
-    )
+        max_length=500)
 
-    winners_input = discord.ui.TextInput(
-        label="Number of Winners",
-        placeholder="E.g., 1, 2, 3, etc.",
-        style=discord.TextStyle.short,
-        required=True,
-        default="1"
-    )
+    winners_input = discord.ui.TextInput(label="Number of Winners",
+                                         placeholder="E.g., 1, 2, 3, etc.",
+                                         style=discord.TextStyle.short,
+                                         required=True,
+                                         default="1")
 
     end_time_input = discord.ui.TextInput(
         label="End of the giveaway:",
         placeholder="Format: YYYY-MM-DD HH:MM (e.g., 2025-11-15 18:30)",
         style=discord.TextStyle.short,
-        required=True
-    )
-    
+        required=True)
+
     def __init__(self, role):
         super().__init__()
         self.selected_role = role
@@ -6461,29 +6459,27 @@ class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
             if winners <= 0:
                 await interaction.followup.send(
                     "❌ **Invalid winner count!**\n\nNumber of winners must be greater than 0.",
-                    ephemeral=True
-                )
+                    ephemeral=True)
                 return
 
             from datetime import datetime
             try:
-                naive_end_time = datetime.strptime(end_time_str, "%Y-%m-%d %H:%M")
+                naive_end_time = datetime.strptime(end_time_str,
+                                                   "%Y-%m-%d %H:%M")
                 end_time = AMSTERDAM_TZ.localize(naive_end_time)
             except ValueError:
                 await interaction.followup.send(
                     "❌ **Invalid date/time format!**\n\n" +
                     "Please use the format: **YYYY-MM-DD HH:MM**\n" +
                     "Example: `2025-11-15 18:30`",
-                    ephemeral=True
-                )
+                    ephemeral=True)
                 return
 
             if end_time <= datetime.now(AMSTERDAM_TZ):
                 await interaction.followup.send(
                     "❌ **End time must be in the future!**\n\n" +
                     f"Current time: {datetime.now(AMSTERDAM_TZ).strftime('%Y-%m-%d %H:%M')}",
-                    ephemeral=True
-                )
+                    ephemeral=True)
                 return
 
             settings = {
@@ -6493,21 +6489,19 @@ class GiveawayCreateModal(discord.ui.Modal, title="Create Giveaway"):
                 'end_time': end_time
             }
 
-            await interaction.followup.send("🎉 Creating your giveaway...", ephemeral=True)
+            await interaction.followup.send("🎉 Creating your giveaway...",
+                                            ephemeral=True)
             await create_giveaway(interaction, settings)
 
         except ValueError as e:
             await interaction.followup.send(
                 f"❌ **Invalid input!**\n\n" +
-                f"Make sure winners is a valid number and date/time is in correct format.\n\n" +
-                f"Error: {str(e)}",
-                ephemeral=True
-            )
+                f"Make sure winners is a valid number and date/time is in correct format.\n\n"
+                + f"Error: {str(e)}",
+                ephemeral=True)
         except Exception as e:
             await interaction.followup.send(
-                f"❌ **Error creating giveaway:** {str(e)}",
-                ephemeral=True
-            )
+                f"❌ **Error creating giveaway:** {str(e)}", ephemeral=True)
 
 
 class ChooseWinnerView(discord.ui.View):
@@ -6519,8 +6513,7 @@ class ChooseWinnerView(discord.ui.View):
         self.selected_giveaway = None
 
         self.add_item(GiveawaySelectionDropdown(active_giveaways, "choose"))
-        user_select = discord.ui.UserSelect(
-            placeholder="👤 Select User")
+        user_select = discord.ui.UserSelect(placeholder="👤 Select User")
         user_select.callback = self.user_selected
         user_select.disabled = True
         self.add_item(user_select)
@@ -6558,15 +6551,15 @@ class ChooseWinnerView(discord.ui.View):
                 return
 
             ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'].append(user_id)
-            
+
             # Update database with new chosen winner
-            await bot.save_giveaway_to_db(giveaway_id, ACTIVE_GIVEAWAYS[giveaway_id])
-            
+            await bot.save_giveaway_to_db(giveaway_id,
+                                          ACTIVE_GIVEAWAYS[giveaway_id])
+
             embed = discord.Embed(
                 title="✅ User Selected",
                 description=
-                f"{member.mention} has been selected `{giveaway_id}`!\n\n"
-                +
+                f"{member.mention} has been selected `{giveaway_id}`!\n\n" +
                 f"**Selected Users:** {len(ACTIVE_GIVEAWAYS[giveaway_id]['chosen_winners'])}/{max_winners}",
                 color=discord.Color.green())
             await interaction.response.send_message(embed=embed,
@@ -6650,8 +6643,7 @@ class GiveawaySelectionDropdown(discord.ui.Select):
 
             embed = discord.Embed(
                 title="🏁 Ending Giveaway",
-                description=
-                f"Ending giveaway `{giveaway_id}`...",
+                description=f"Ending giveaway `{giveaway_id}`...",
                 color=discord.Color.orange())
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -6680,9 +6672,7 @@ async def giveaway_command(interaction: discord.Interaction):
         embed.add_field(name="📋 List Active Giveaways",
                         value="View all currently running giveaways",
                         inline=False)
-        embed.add_field(name="🎯 User",
-                        value="Select a User",
-                        inline=False)
+        embed.add_field(name="🎯 User", value="Select a User", inline=False)
         embed.add_field(name="🏁 End Giveaway",
                         value="End a giveaway early and select winners",
                         inline=False)
@@ -6711,11 +6701,9 @@ async def create_giveaway(interaction, settings):
                               color=discord.Color.gold(),
                               timestamp=end_time)
 
-        embed.add_field(
-            name="⏰ End of the giveaway:",
-            value=f"<t:{int(end_time.timestamp())}:F>",
-            inline=True
-        )
+        embed.add_field(name="⏰ End of the giveaway:",
+                        value=f"<t:{int(end_time.timestamp())}:F>",
+                        inline=True)
 
         embed.add_field(
             name="🏆 Winners",
@@ -6766,7 +6754,8 @@ async def create_giveaway(interaction, settings):
         }
 
         # Save giveaway to database for persistence across bot restarts
-        await bot.save_giveaway_to_db(giveaway_id, ACTIVE_GIVEAWAYS[giveaway_id])
+        await bot.save_giveaway_to_db(giveaway_id,
+                                      ACTIVE_GIVEAWAYS[giveaway_id])
 
         # Log to bot log channel with giveaway ID
         await bot.log_to_discord(
@@ -6982,34 +6971,35 @@ async def on_reaction_add(reaction, user):
         # Remove their reaction and send DM with detailed level information
         try:
             await reaction.remove(user)
-            
+
             # Get user's current level information
             user_id_str = str(user.id)
             user_data = LEVEL_SYSTEM["user_data"].get(user_id_str)
-            
+
             if user_data:
                 current_level = user_data.get("current_level", 0)
                 message_count = user_data.get("message_count", 0)
             else:
                 current_level = 0
                 message_count = 0
-            
+
             # Determine current level name or "Unranked"
             if current_level > 0:
                 current_level_text = f"Level {current_level}"
             else:
                 current_level_text = "Unranked"
-            
+
             # Calculate next level and messages needed
             next_level = current_level + 1
             if next_level in LEVEL_SYSTEM["level_requirements"]:
-                required_messages = LEVEL_SYSTEM["level_requirements"][next_level]
+                required_messages = LEVEL_SYSTEM["level_requirements"][
+                    next_level]
                 messages_remaining = required_messages - message_count
-                
+
                 # Make sure messages_remaining is not negative
                 if messages_remaining < 0:
                     messages_remaining = 0
-                
+
                 level_progress_text = (
                     f"You are currently **{current_level_text}**. "
                     f"You need **{messages_remaining}** more chats to get to **Level {next_level}**."
@@ -7017,12 +7007,11 @@ async def on_reaction_add(reaction, user):
             else:
                 # User is at max level or beyond
                 level_progress_text = f"You are currently **{current_level_text}**."
-            
+
             await user.send(
                 "**Unfortunately, your current activity level is not high enough to enter this giveaway. "
                 "You can level up by participating in conversations in any of our text channels.**\n\n"
-                f"{level_progress_text}"
-            )
+                f"{level_progress_text}")
         except (discord.Forbidden, discord.NotFound):
             pass  # Can't DM user or remove reaction
         return
@@ -7038,8 +7027,7 @@ async def on_reaction_add(reaction, user):
     message_id="The message ID of the giveaway",
     giveaway_id="The giveaway ID (e.g., giveaway_1762902912)")
 async def restore_giveaway_command(interaction: discord.Interaction,
-                                    message_id: str,
-                                    giveaway_id: str):
+                                   message_id: str, giveaway_id: str):
     """Restore a giveaway from a message ID"""
     if not await owner_check(interaction):
         return
@@ -7072,17 +7060,18 @@ async def restore_giveaway_command(interaction: discord.Interaction,
             return
 
         embed = message.embeds[0]
-        
+
         # Extract information from embed
         message_text = embed.description or ""
-        
+
         # Find required role from embed fields
         required_role_id = None
         winner_count = 1
         end_timestamp = None
-        
+
         for field in embed.fields:
-            if "Requirements" in field.name and "required rank" in field.value.lower():
+            if "Requirements" in field.name and "required rank" in field.value.lower(
+            ):
                 # Extract role ID from mention (format: <@&role_id>)
                 role_match = re.search(r'<@&(\d+)>', field.value)
                 if role_match:
@@ -7092,7 +7081,7 @@ async def restore_giveaway_command(interaction: discord.Interaction,
                 winner_match = re.search(r'(\d+)\s+winner', field.value)
                 if winner_match:
                     winner_count = int(winner_match.group(1))
-        
+
         # Get end time from embed timestamp
         if embed.timestamp:
             end_time = embed.timestamp
@@ -7100,8 +7089,7 @@ async def restore_giveaway_command(interaction: discord.Interaction,
                 end_time = end_time.replace(tzinfo=AMSTERDAM_TZ)
         else:
             await interaction.followup.send(
-                "❌ Could not find end time in giveaway embed.",
-                ephemeral=True)
+                "❌ Could not find end time in giveaway embed.", ephemeral=True)
             return
 
         if not required_role_id:
