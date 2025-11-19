@@ -957,6 +957,93 @@ class TradingBot(commands.Bot):
             except Exception as e:
                 print(f"Heartbeat error: {e}")
 
+    @tasks.loop(minutes=1)
+    async def process_pending_welcome_dms(self):
+        """Process pending welcome DMs that are ready to be sent"""
+        if not self.db_pool:
+            return
+        
+        try:
+            now = datetime.now(AMSTERDAM_TZ)
+            async with self.db_pool.acquire() as conn:
+                # Get all pending DMs that should be sent now
+                pending_dms = await conn.fetch('''
+                    SELECT member_id, guild_id, scheduled_send_time
+                    FROM pending_welcome_dms
+                    WHERE sent = FALSE AND scheduled_send_time <= $1
+                    ORDER BY scheduled_send_time ASC
+                    LIMIT 10
+                ''', now)
+                
+                for dm in pending_dms:
+                    member_id = dm['member_id']
+                    guild_id = dm['guild_id']
+                    
+                    try:
+                        # Get the guild and member
+                        guild = self.get_guild(guild_id)
+                        if not guild:
+                            # Guild not found, mark as sent to clean up
+                            await conn.execute('''
+                                UPDATE pending_welcome_dms SET sent = TRUE
+                                WHERE member_id = $1
+                            ''', member_id)
+                            continue
+                        
+                        member = guild.get_member(member_id)
+                        if not member:
+                            # Try fetching member
+                            try:
+                                member = await guild.fetch_member(member_id)
+                            except (discord.NotFound, discord.HTTPException):
+                                # Member left or not found, mark as sent to clean up
+                                await conn.execute('''
+                                    UPDATE pending_welcome_dms SET sent = TRUE
+                                    WHERE member_id = $1
+                                ''', member_id)
+                                await self.log_to_discord(
+                                    f"⚠️ Could not send welcome DM to member ID {member_id} (member left or not found)"
+                                )
+                                continue
+                        
+                        # Send the welcome DM
+                        try:
+                            await member.send(WELCOME_DM_MESSAGE)
+                            await conn.execute('''
+                                UPDATE pending_welcome_dms SET sent = TRUE
+                                WHERE member_id = $1
+                            ''', member_id)
+                            await self.log_to_discord(
+                                f"✅ Sent welcome DM to {member.display_name} (ID: {member_id})"
+                            )
+                        except discord.Forbidden:
+                            # User has DMs disabled, mark as sent to clean up
+                            await conn.execute('''
+                                UPDATE pending_welcome_dms SET sent = TRUE
+                                WHERE member_id = $1
+                            ''', member_id)
+                            await self.log_to_discord(
+                                f"⚠️ Could not send welcome DM to {member.display_name} (DMs disabled)"
+                            )
+                        
+                    except Exception as e:
+                        # Log error but don't mark as sent so we can retry
+                        await self.log_to_discord(
+                            f"❌ Error sending welcome DM to member ID {member_id}: {str(e)}"
+                        )
+                        print(f"Error sending welcome DM to {member_id}: {e}")
+                
+                # Clean up old sent DMs (older than 7 days)
+                cleanup_time = now - timedelta(days=7)
+                await conn.execute('''
+                    DELETE FROM pending_welcome_dms
+                    WHERE sent = TRUE AND created_at < $1
+                ''', cleanup_time)
+                
+        except Exception as e:
+            print(f"Error in process_pending_welcome_dms: {e}")
+            await self.log_to_discord(f"❌ Error processing pending welcome DMs: {str(e)}")
+
     async def init_database(self):
         """Initialize database connection and create tables"""
         try:
@@ -1055,6 +1142,18 @@ class TradingBot(commands.Bot):
                     INSERT INTO welcome_dm_config (id, enabled, delay_minutes, message)
                     VALUES (1, FALSE, 5, 'Welcome to the server! 🎉')
                     ON CONFLICT (id) DO NOTHING
+                ''')
+
+                # Pending welcome DMs table for persistent tracking
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS pending_welcome_dms (
+                        member_id BIGINT PRIMARY KEY,
+                        guild_id BIGINT NOT NULL,
+                        joined_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                        scheduled_send_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                        sent BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
                 ''')
 
                 # Bot status table for offline recovery
@@ -1602,6 +1701,12 @@ class TradingBot(commands.Bot):
             if not hasattr(self, 'heartbeat_task_started'):
                 self.heartbeat_task.start()
                 self.heartbeat_task_started = True
+            
+            # Start welcome DM processing task
+            if not hasattr(self, 'welcome_dm_task_started'):
+                self.process_pending_welcome_dms.start()
+                self.welcome_dm_task_started = True
+                print("✅ Welcome DM processing task started")
 
     async def on_connect(self):
         """Called when bot connects to Discord"""
@@ -1728,29 +1833,22 @@ class TradingBot(commands.Bot):
                         'SELECT * FROM welcome_dm_config WHERE id = 1')
                     if config and config['enabled']:
                         delay_minutes = config['delay_minutes']
-
-                        # Schedule the DM using asyncio
-                        async def send_delayed_dm():
-                            await self.log_to_discord(
-                                f"⏰ Scheduled welcome DM for {member.display_name} - will send in {delay_minutes} minutes"
-                            )
-                            await asyncio.sleep(delay_minutes * 60)
-                            try:
-                                await member.send(WELCOME_DM_MESSAGE)
-                                await self.log_to_discord(
-                                    f"✅ Sent welcome DM to {member.display_name} after {delay_minutes} minute delay"
-                                )
-                            except discord.Forbidden:
-                                await self.log_to_discord(
-                                    f"⚠️ Could not send welcome DM to {member.display_name} (DMs disabled)"
-                                )
-                            except Exception as e:
-                                await self.log_to_discord(
-                                    f"❌ Error sending welcome DM to {member.display_name}: {str(e)}"
-                                )
-
-                        # Start the task in the background using asyncio.create_task
-                        asyncio.create_task(send_delayed_dm())
+                        
+                        # Save to database for persistent tracking
+                        joined_at = datetime.now(AMSTERDAM_TZ)
+                        scheduled_send_time = joined_at + timedelta(minutes=delay_minutes)
+                        
+                        await conn.execute('''
+                            INSERT INTO pending_welcome_dms (member_id, guild_id, joined_at, scheduled_send_time, sent)
+                            VALUES ($1, $2, $3, $4, FALSE)
+                            ON CONFLICT (member_id) DO UPDATE
+                            SET scheduled_send_time = EXCLUDED.scheduled_send_time,
+                                sent = FALSE
+                        ''', member.id, member.guild.id, joined_at, scheduled_send_time)
+                        
+                        await self.log_to_discord(
+                            f"⏰ Scheduled welcome DM for {member.display_name} - will send at {scheduled_send_time.strftime('%Y-%m-%d %H:%M:%S')} (in {delay_minutes} minutes)"
+                        )
 
             # Handle auto-role (only if enabled)
             if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG[
@@ -7000,19 +7098,38 @@ async def on_reaction_add(reaction, user):
     except (discord.NotFound, discord.HTTPException):
         member = reaction.message.guild.get_member(user.id)
 
-    # Log detailed information to giveaway debug channel
-    role_check_result = "UNKNOWN"
-    user_roles_list = []
+    # Determine required level from role ID
+    required_level = None
+    for level, role_id in LEVEL_SYSTEM["level_roles"].items():
+        if role_id == giveaway_data['required_role_id']:
+            required_level = level
+            break
 
+    # Get user's actual level from LEVEL_SYSTEM
+    user_id_str = str(user.id)
+    user_data = LEVEL_SYSTEM["user_data"].get(user_id_str)
+    
+    if user_data:
+        current_level = user_data.get("current_level", 0)
+        message_count = user_data.get("message_count", 0)
+    else:
+        current_level = 0
+        message_count = 0
+
+    # Check if user meets level requirement
+    level_check_passed = False
+    if required_level is not None:
+        level_check_passed = current_level >= required_level
+    else:
+        # If we can't determine required level, fall back to role check
+        level_check_passed = member and required_role and required_role in member.roles
+
+    # Log detailed information to giveaway debug channel
+    user_roles_list = []
     if member:
         user_roles_list = [role.name for role in member.roles]
-        if required_role:
-            has_role = required_role in member.roles
-            role_check_result = "PASSED ✅" if has_role else "FAILED ❌"
-        else:
-            role_check_result = "FAILED ❌ (Role not found)"
-    else:
-        role_check_result = "FAILED ❌ (Member not found)"
+
+    level_check_result = "PASSED ✅" if level_check_passed else "FAILED ❌"
 
     # Log to giveaway debug channel
     await bot.log_giveaway_event(
@@ -7020,10 +7137,12 @@ async def on_reaction_add(reaction, user):
         f"📝 **Giveaway ID:** `{giveaway_id}`\n"
         f"👤 **User:** {user.name} ({user.mention})\n"
         f"🎭 **Required Role:** {required_role.name if required_role else 'NOT FOUND'} (ID: {giveaway_data['required_role_id']})\n"
+        f"📊 **Required Level:** {required_level if required_level else 'Unknown'}\n"
+        f"📈 **User Level:** {current_level} ({message_count} messages)\n"
         f"🏷️ **User Roles:** {', '.join(user_roles_list) if user_roles_list else 'None'}\n"
-        f"✔️ **Role Check:** {role_check_result}")
+        f"✔️ **Level Check:** {level_check_result}")
 
-    if not member or not required_role or required_role not in member.roles:
+    if not member or not level_check_passed:
         # Remove their reaction and send DM with detailed level information
         try:
             await reaction.remove(user)
@@ -7032,18 +7151,7 @@ async def on_reaction_add(reaction, user):
             await bot.log_giveaway_event(
                 f"🚫 **Entry REJECTED** for {user.mention}\n"
                 f"Giveaway ID: `{giveaway_id}`\n"
-                f"Reason: Missing required role or member/role not found")
-
-            # Get user's current level information
-            user_id_str = str(user.id)
-            user_data = LEVEL_SYSTEM["user_data"].get(user_id_str)
-
-            if user_data:
-                current_level = user_data.get("current_level", 0)
-                message_count = user_data.get("message_count", 0)
-            else:
-                current_level = 0
-                message_count = 0
+                f"Reason: Does not meet level requirement (Current: Level {current_level}, Required: Level {required_level if required_level else 'Unknown'})")
 
             # Determine current level name or "Level 0"
             if current_level > 0:
@@ -7051,11 +7159,9 @@ async def on_reaction_add(reaction, user):
             else:
                 current_level_text = "Level 0"
 
-            # Calculate next level and messages needed
-            next_level = current_level + 1
-            if next_level in LEVEL_SYSTEM["level_requirements"]:
-                required_messages = LEVEL_SYSTEM["level_requirements"][
-                    next_level]
+            # Calculate messages needed to reach required level
+            if required_level and required_level in LEVEL_SYSTEM["level_requirements"]:
+                required_messages = LEVEL_SYSTEM["level_requirements"][required_level]
                 messages_remaining = required_messages - message_count
 
                 # Make sure messages_remaining is not negative
@@ -7063,12 +7169,24 @@ async def on_reaction_add(reaction, user):
                     messages_remaining = 0
 
                 level_progress_text = (
-                    f"You are currently **{current_level_text}**. "
-                    f"You need to send **{messages_remaining}** more chats in <#1384795868670201997> to get to **Level {next_level}**."
+                    f"You are currently **{current_level_text}** with **{message_count}** messages. "
+                    f"This giveaway requires **Level {required_level}** ({required_messages} messages). "
+                    f"You need to send **{messages_remaining}** more chats in <#1384795868670201997> to reach the required level."
                 )
             else:
-                # User is at max level or beyond
-                level_progress_text = f"You are currently **{current_level_text}**."
+                # Calculate next level progress
+                next_level = current_level + 1
+                if next_level in LEVEL_SYSTEM["level_requirements"]:
+                    required_messages = LEVEL_SYSTEM["level_requirements"][next_level]
+                    messages_remaining = required_messages - message_count
+                    if messages_remaining < 0:
+                        messages_remaining = 0
+                    level_progress_text = (
+                        f"You are currently **{current_level_text}**. "
+                        f"You need to send **{messages_remaining}** more chats in <#1384795868670201997> to get to **Level {next_level}**."
+                    )
+                else:
+                    level_progress_text = f"You are currently **{current_level_text}**."
 
             await user.send(
                 "Unfortunately, your current activity level is not high enough to enter this giveaway. "
