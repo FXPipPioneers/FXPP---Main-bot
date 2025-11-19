@@ -490,7 +490,7 @@ class TradingBot(commands.Bot):
                     # Send missed 3-day DM
                     if not dm_data["dm_3_sent"] and current_time >= dm_3_time:
                         try:
-                            dm_message = "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>"
+                            dm_message = "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We truly hope that you were able to catch good trades with us during that time.\n\nAs you've probably seen, our free signals channel gets **1 free signal per day**, while our **Gold Pioneers** in <#1350929852299214999> receive **6+ high-quality signals per day. That means that our Premium Signals Channel offers way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals Channel,** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str][
                                 "dm_3_sent"] = True
@@ -506,7 +506,7 @@ class TradingBot(commands.Bot):
                     # Send missed 7-day DM
                     if not dm_data["dm_7_sent"] and current_time >= dm_7_time:
                         try:
-                            dm_message = "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers  have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 24 hours, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>"
+                            dm_message = "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 24 hours, imagine what results you could've been seeing by now with full access. It's all about **consistency and staying connected to the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str][
                                 "dm_7_sent"] = True
@@ -522,7 +522,7 @@ class TradingBot(commands.Bot):
                     # Send missed 14-day DM
                     if not dm_data["dm_14_sent"] and current_time >= dm_14_time:
                         try:
-                            dm_message = "Hey! It's been two weeks since your access to Premium Signals ended. We hope you've stayed active. \n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. in <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **officially invite you back into Premium Signals** and help you start compounding results again.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>"
+                            dm_message = "Hey! It's been two weeks since your free access to our Premium Signals Channel ended. We hope you've stayed active since then. \n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. In <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **invite you back into the Premium Signals Channel** and help you start compounding results again.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str][
                                 "dm_14_sent"] = True
