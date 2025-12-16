@@ -75,8 +75,8 @@ intents.members = True  # Required for member join events
 
 # Auto-role system storage with weekend handling and memory system
 AUTO_ROLE_CONFIG = {
-    "enabled": False,
-    "role_id": None,
+    "enabled": True,  # Always enabled by default
+    "role_id": 1384489575187091466,  # Gold pioneers role
     "duration_hours": 72,  # Fixed at 72 hours (3 days)
     "custom_message":
     "Hey! Your **3-day free access** to the <#1350929852299214999> channel has unfortunately **ran out**. We truly hope you were able to benefit with us & we hope to see you back soon! For now, feel free to continue following our trade signals in ⁠<#1350929790148022324>",
@@ -369,9 +369,8 @@ class TradingBot(commands.Bot):
 
                         # Determine if it was weekend when they joined
                         if self.is_weekend_time(join_time):
-                            # Weekend join - expires Monday 23:59
-                            monday_expiry = self.get_monday_expiry_time(
-                                join_time)
+                            # Weekend join - 120 hours (5 days) from join time to account for weekend
+                            expiry_time = join_time + timedelta(hours=120)
 
                             AUTO_ROLE_CONFIG["active_members"][
                                 member_id_str] = {
@@ -379,16 +378,16 @@ class TradingBot(commands.Bot):
                                     "role_id": AUTO_ROLE_CONFIG["role_id"],
                                     "guild_id": guild.id,
                                     "weekend_delayed": True,
-                                    "expiry_time": monday_expiry.isoformat()
+                                    "expiry_time": expiry_time.isoformat()
                                 }
 
                             # Send weekend DM
                             try:
                                 weekend_message = (
-                                    "**Welcome to FX Pip Pioneers!** As a welcome gift, we usually give our new members "
-                                    "**access to the Premium Signals channel for 3 days.** However, the trading markets are currently closed for the weekend. "
-                                    "**Your 3-day countdown will start on Monday at 00:01 Amsterdam time** and your premium access will expire on Thursday at 01:00 Amsterdam time. "
-                                    "Good luck trading!")
+                                    "**Welcome to FX Pip Pioneers!** As a welcome gift, we've given you "
+                                    "**access to the Premium Signals channel for 3 trading days.** Since you joined during the weekend, "
+                                    "your access will expire in 5 days (120 hours) to account for the 2 weekend days when the markets are closed. "
+                                    "This way, you get the full 3 trading days of premium access. Good luck trading!")
                                 await member.send(weekend_message)
                             except discord.Forbidden:
                                 await self.log_to_discord(
@@ -1952,15 +1951,16 @@ class TradingBot(commands.Bot):
 
             # Check if it's weekend time to determine countdown behavior
             if self.is_weekend_time(join_time):
-                # Weekend join - expires Monday 23:59 (not Tuesday 01:00)
-                monday_expiry = self.get_monday_expiry_time(join_time)
+                # Weekend join - 120 hours (5 days) from join time to account for weekend
+                # This way weekend joiners still get exactly 3 trading days worth of trial
+                expiry_time = join_time + timedelta(hours=120)
 
                 AUTO_ROLE_CONFIG["active_members"][member_id_str] = {
                     "role_added_time": join_time.isoformat(),
                     "role_id": AUTO_ROLE_CONFIG["role_id"],
                     "guild_id": member.guild.id,
                     "weekend_delayed": True,
-                    "expiry_time": monday_expiry.isoformat()
+                    "expiry_time": expiry_time.isoformat()
                 }
 
                 # Record in role history for anti-abuse
@@ -1974,11 +1974,10 @@ class TradingBot(commands.Bot):
                 # Send weekend notification DM
                 try:
                     weekend_message = (
-                        "**Welcome to FX Pip Pioneers!** As a welcome gift, we usually give our new members "
-                        "**access to the Premium Signals channel for 3 days.** However, the trading markets are currently closed for the weekend. "
-                        "We're Messaging you to let you know that your 3 days of access to <#1384668129036075109> will start counting down from "
-                        "the moment the markets open again on Monday. This way, your welcome gift won't be wasted on the weekend "
-                        "and you'll actually be able to make use of it.")
+                        "**Welcome to FX Pip Pioneers!** As a welcome gift, we've given you "
+                        "**access to the Premium Signals channel for 3 trading days.** Since you joined during the weekend, "
+                        "your access will expire in 5 days (120 hours) to account for the 2 weekend days when the markets are closed. "
+                        "This way, you get the full 3 trading days of premium access. Good luck trading!")
                     await member.send(weekend_message)
                     await self.log_to_discord(
                         f"✅ Sent weekend notification DM to {member.display_name}"
@@ -1993,7 +1992,7 @@ class TradingBot(commands.Bot):
                     )
 
                 await self.log_to_discord(
-                    f"✅ Auto-role '{role.name}' added to {member.display_name} (expires Monday 23:59)"
+                    f"✅ Auto-role '{role.name}' added to {member.display_name} (120h countdown - expires {expiry_time.strftime('%Y-%m-%d %H:%M')})"
                 )
 
             else:
@@ -5323,71 +5322,20 @@ async def owner_check(interaction: discord.Interaction) -> bool:
 
 
 @bot.tree.command(name="timedautorole",
-                  description="Configure timed auto-role for new members")
+                  description="View timed auto-role status and active members")
 @app_commands.describe(
-    action=
-    "Enable/disable, check status, list active members, add user manually, or remove user",
-    role="Role to assign to new members (required when enabling)",
-    user=
-    "User to add/remove manually (required for adduser/removeuser actions)",
-    timing=
-    "Timing type for manual add: 72hours, weekend, or custom (required for adduser action)",
-    custom_hours="Custom hours for role duration (used with timing=custom)",
-    custom_minutes="Custom minutes for role duration (used with timing=custom)"
+    action="Check status or list active members"
 )
 async def timed_auto_role_command(interaction: discord.Interaction,
-                                  action: str,
-                                  role: discord.Role | None = None,
-                                  user: discord.Member | None = None,
-                                  timing: str | None = None,
-                                  custom_hours: int | None = None,
-                                  custom_minutes: int | None = None):
-    """Configure the timed auto-role system with fixed 72-hour (3 day) duration"""
+                                  action: str):
+    """View the timed auto-role system status and active members"""
 
     # Check if user is bot owner
     if not await owner_check(interaction):
         return
 
     try:
-        if action.lower() == "enable":
-            if not role:
-                await interaction.response.send_message(
-                    "❌ You must specify a role when enabling auto-role.",
-                    ephemeral=True)
-                return
-
-            # Check if bot has permission to manage the role
-            if interaction.guild and interaction.guild.me and role >= interaction.guild.me.top_role:
-                await interaction.response.send_message(
-                    f"❌ I cannot manage the role '{role.name}' because it's higher than my highest role.",
-                    ephemeral=True)
-                return
-
-            # Update configuration (duration is fixed at 72 hours / 3 days)
-            AUTO_ROLE_CONFIG["enabled"] = True
-            AUTO_ROLE_CONFIG["role_id"] = role.id
-            AUTO_ROLE_CONFIG["duration_hours"] = 72  # Fixed duration (3 days)
-
-            # Save configuration
-            await bot.save_auto_role_config()
-
-            await interaction.response.send_message(
-                f"✅ **Auto-role system enabled!**\n"
-                f"• **Role:** {role.mention}\n"
-                f"• **Duration:** 72 hours / 3 days (fixed)\n"
-                f"• **Weekend handling:** Enabled (72h countdown starts Monday, ends Thursday)\n\n"
-                f"New members will automatically receive this role for 3 days.",
-                ephemeral=True)
-
-        elif action.lower() == "disable":
-            AUTO_ROLE_CONFIG["enabled"] = False
-            await bot.save_auto_role_config()
-
-            await interaction.response.send_message(
-                "✅ Auto-role system disabled. No new roles will be assigned to new members.",
-                ephemeral=True)
-
-        elif action.lower() == "status":
+        if action.lower() == "status":
             if AUTO_ROLE_CONFIG["enabled"]:
                 role = interaction.guild.get_role(
                     AUTO_ROLE_CONFIG["role_id"]
@@ -5447,8 +5395,8 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                     ephemeral=True)
                 return
 
-            # Build the list of active members with precise time remaining
-            member_list = []
+            # Build the list of active members grouped by join date
+            members_by_date = {}
 
             # Get the role object for checking
             role = interaction.guild.get_role(
@@ -5474,292 +5422,126 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                     time_display = get_remaining_time_display(member_id)
                     # Only add members who aren't expired (time_display will be None for expired)
                     if time_display is not None:
-                        member_list.append(
+                        # Get the join date from role_added_time
+                        role_added_time = data.get("role_added_time")
+                        if role_added_time:
+                            join_dt = datetime.fromisoformat(role_added_time)
+                            if join_dt.tzinfo is None:
+                                join_dt = join_dt.replace(tzinfo=AMSTERDAM_TZ)
+                            join_date = join_dt.strftime("%d-%m-%Y")
+                        else:
+                            join_date = "Unknown"
+                        
+                        if join_date not in members_by_date:
+                            members_by_date[join_date] = []
+                        members_by_date[join_date].append(
                             f"• {member.display_name} - {time_display}")
 
                 except Exception as e:
                     print(f"Error processing member {member_id}: {str(e)}")
                     continue
 
-            if not member_list:
+            if not members_by_date:
                 await interaction.response.send_message(
                     "📝 No valid members found with temporary roles.",
                     ephemeral=True)
                 return
 
-            # Create the response message
+            # Get role name for header
             role = interaction.guild.get_role(
                 AUTO_ROLE_CONFIG["role_id"]
             ) if interaction.guild and AUTO_ROLE_CONFIG["role_id"] else None
             role_name = role.name if role else "Unknown Role"
 
-            list_message = f"📋 **Active Temporary Role Members**\n"
-            list_message += f"**Role:** {role_name}\n"
-            list_message += f"**Duration:** 72 hours / 3 days (fixed)\n\n"
-            list_message += "\n".join(
-                member_list[:20]
-            )  # Limit to 20 members to avoid message length issues
+            # Sort dates (newest first) and count total members
+            sorted_dates = sorted(members_by_date.keys(), 
+                                  key=lambda x: datetime.strptime(x, "%d-%m-%Y") if x != "Unknown" else datetime.min, 
+                                  reverse=True)
+            total_members = sum(len(members) for members in members_by_date.values())
 
-            if len(member_list) > 20:
-                list_message += f"\n\n*...and {len(member_list) - 20} more members*"
+            # Create embeds with date sections
+            embeds = []
+            current_embed = discord.Embed(
+                title=f"📋 Active Temporary Role Members",
+                description=f"**Role:** {role_name}\n**Total:** {total_members} members",
+                color=0xFFD700
+            )
+            current_field_count = 0
 
-            await interaction.response.send_message(list_message,
-                                                    ephemeral=True)
-
-        elif action.lower() == "adduser":
-            if not AUTO_ROLE_CONFIG["enabled"]:
-                await interaction.response.send_message(
-                    "❌ Auto-role system is disabled. Enable it first before adding users manually.",
-                    ephemeral=True)
-                return
-
-            if not user:
-                await interaction.response.send_message(
-                    "❌ You must specify a user when using the adduser action.",
-                    ephemeral=True)
-                return
-
-            if not timing or timing.lower() not in [
-                    "72hours", "weekend", "custom"
-            ]:
-                await interaction.response.send_message(
-                    "❌ You must specify timing: '72hours', 'weekend', or 'custom'.",
-                    ephemeral=True)
-                return
-
-            if timing.lower() == "custom":
-                if custom_hours is None and custom_minutes is None:
-                    await interaction.response.send_message(
-                        "❌ You must specify custom_hours and/or custom_minutes when using custom timing.",
-                        ephemeral=True)
-                    return
-                if custom_hours is not None and (
-                        custom_hours < 0 or custom_hours > 168):  # Max 1 week
-                    await interaction.response.send_message(
-                        "❌ Custom hours must be between 0 and 168 (1 week maximum).",
-                        ephemeral=True)
-                    return
-                if custom_minutes is not None and (custom_minutes < 0
-                                                   or custom_minutes > 59):
-                    await interaction.response.send_message(
-                        "❌ Custom minutes must be between 0 and 59.",
-                        ephemeral=True)
-                    return
-
-            # Get the configured role
-            target_role = interaction.guild.get_role(
-                AUTO_ROLE_CONFIG["role_id"]) if interaction.guild else None
-            if not target_role:
-                await interaction.response.send_message(
-                    "❌ Auto-role is not properly configured. No valid role found.",
-                    ephemeral=True)
-                return
-
-            # Manual adduser bypasses anti-abuse system (admin exception)
-            user_id_str = str(user.id)
-
-            # Check if user already has the role or is already tracked
-            if user_id_str in AUTO_ROLE_CONFIG["active_members"]:
-                await interaction.response.send_message(
-                    f"❌ {user.display_name} already has an active temporary role.",
-                    ephemeral=True)
-                return
-
-            if target_role in user.roles:
-                await interaction.response.send_message(
-                    f"❌ {user.display_name} already has the {target_role.name} role.",
-                    ephemeral=True)
-                return
-
-            try:
-                # Add the role to the user
-                await user.add_roles(
-                    target_role,
-                    reason="Manual addition via /timedautorole adduser")
-
-                now = datetime.now(AMSTERDAM_TZ)
-
-                if timing.lower() == "weekend":
-                    # Weekend timing - expires Monday 23:59
-                    expiry_time = bot.get_monday_expiry_time(now)
-
-                    AUTO_ROLE_CONFIG["active_members"][user_id_str] = {
-                        "role_added_time": now.isoformat(),
-                        "role_id": target_role.id,
-                        "guild_id": interaction.guild.id,
-                        "weekend_delayed": True,
-                        "expiry_time": expiry_time.isoformat()
-                    }
-
-                    # Record in role history for anti-abuse
-                    AUTO_ROLE_CONFIG["role_history"][user_id_str] = {
-                        "first_granted": now.isoformat(),
-                        "times_granted": 1,
-                        "last_expired": None,
-                        "guild_id": interaction.guild.id
-                    }
-
-                    timing_info = f"Weekend timing (expires Monday 23:59)"
-
-                elif timing.lower() == "custom":
-                    # Custom timing
-                    hours = custom_hours or 0
-                    minutes = custom_minutes or 0
-                    total_minutes = (hours * 60) + minutes
-
-                    if total_minutes == 0:
-                        await interaction.response.send_message(
-                            "❌ Custom duration cannot be 0. Please specify at least 1 minute.",
-                            ephemeral=True)
-                        return
-
-                    expiry_time = now + timedelta(hours=hours, minutes=minutes)
-
-                    AUTO_ROLE_CONFIG["active_members"][user_id_str] = {
-                        "role_added_time": now.isoformat(),
-                        "role_id": target_role.id,
-                        "guild_id": interaction.guild.id,
-                        "weekend_delayed":
-                        True,  # Use weekend logic for custom timing
-                        "expiry_time": expiry_time.isoformat(),
-                        "custom_duration": True
-                    }
-
-                    # Record in role history for anti-abuse
-                    AUTO_ROLE_CONFIG["role_history"][user_id_str] = {
-                        "first_granted": now.isoformat(),
-                        "times_granted": 1,
-                        "last_expired": None,
-                        "guild_id": interaction.guild.id
-                    }
-
-                    duration_text = []
-                    if hours > 0:
-                        duration_text.append(f"{hours}h")
-                    if minutes > 0:
-                        duration_text.append(f"{minutes}m")
-
-                    timing_info = f"Custom: {' '.join(duration_text)} (expires {expiry_time.strftime('%A %H:%M')})"
-
+            for join_date in sorted_dates:
+                members = members_by_date[join_date]
+                member_text = "\n".join(members)
+                
+                # Discord embed field value limit is 1024 chars
+                # If too long, split into multiple fields
+                if len(member_text) > 1024:
+                    chunks = []
+                    current_chunk = []
+                    current_length = 0
+                    for m in members:
+                        if current_length + len(m) + 1 > 1000:
+                            chunks.append("\n".join(current_chunk))
+                            current_chunk = [m]
+                            current_length = len(m)
+                        else:
+                            current_chunk.append(m)
+                            current_length += len(m) + 1
+                    if current_chunk:
+                        chunks.append("\n".join(current_chunk))
+                    
+                    for i, chunk in enumerate(chunks):
+                        field_name = f"📅 {join_date}" if i == 0 else f"📅 {join_date} (cont.)"
+                        if current_field_count >= 25:
+                            current_embed.set_footer(text=f"Duration: 72h (3 days) | Weekend: 120h (5 days)")
+                            embeds.append(current_embed)
+                            current_embed = discord.Embed(
+                                title=f"📋 Active Temporary Role Members (continued)",
+                                color=0xFFD700
+                            )
+                            current_field_count = 0
+                        current_embed.add_field(name=field_name, value=chunk, inline=False)
+                        current_field_count += 1
                 else:
-                    # 72-hour (3 day) timing
-                    AUTO_ROLE_CONFIG["active_members"][user_id_str] = {
-                        "role_added_time": now.isoformat(),
-                        "role_id": target_role.id,
-                        "guild_id": interaction.guild.id,
-                        "weekend_delayed": False
-                    }
+                    if current_field_count >= 25:
+                        current_embed.set_footer(text=f"Duration: 72h (3 days) | Weekend: 120h (5 days)")
+                        embeds.append(current_embed)
+                        current_embed = discord.Embed(
+                            title=f"📋 Active Temporary Role Members (continued)",
+                            color=0xFFD700
+                        )
+                        current_field_count = 0
+                    current_embed.add_field(
+                        name=f"📅 {join_date} ({len(members)} members)",
+                        value=member_text,
+                        inline=False
+                    )
+                    current_field_count += 1
 
-                    # Record in role history for anti-abuse
-                    AUTO_ROLE_CONFIG["role_history"][user_id_str] = {
-                        "first_granted": now.isoformat(),
-                        "times_granted": 1,
-                        "last_expired": None,
-                        "guild_id": interaction.guild.id
-                    }
+            # Add the last embed
+            current_embed.set_footer(text=f"Duration: 72h (3 days) | Weekend: 120h (5 days)")
+            embeds.append(current_embed)
 
-                    timing_info = f"72 hours / 3 days (expires {(now + timedelta(hours=72)).strftime('%A %H:%M')})"
-
-                # Save configuration
-                await bot.save_auto_role_config()
-
-                await interaction.response.send_message(
-                    f"✅ **Successfully added {user.display_name} to temporary role**\n"
-                    f"• **Role:** {target_role.name}\n"
-                    f"• **Duration:** {timing_info}\n"
-                    f"• **Added by:** {interaction.user.display_name}",
-                    ephemeral=True)
-
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    f"❌ I don't have permission to add the {target_role.name} role to {user.display_name}.",
-                    ephemeral=True)
-            except Exception as e:
-                await interaction.response.send_message(
-                    f"❌ Error adding role to {user.display_name}: {str(e)}",
-                    ephemeral=True)
-
-        elif action.lower() == "removeuser":
-            if not user:
-                await interaction.response.send_message(
-                    "❌ You must specify a user when using the removeuser action.",
-                    ephemeral=True)
-                return
-
-            # Check if user is tracked in the system
-            if str(user.id) not in AUTO_ROLE_CONFIG["active_members"]:
-                await interaction.response.send_message(
-                    f"❌ {user.display_name} is not currently tracked in the auto-role system.",
-                    ephemeral=True)
-                return
-
-            try:
-                # Get the role info before removing
-                user_data = AUTO_ROLE_CONFIG["active_members"][str(user.id)]
-                role_id = user_data.get("role_id")
-                target_role = interaction.guild.get_role(
-                    role_id) if interaction.guild and role_id else None
-
-                # Remove from tracking
-                del AUTO_ROLE_CONFIG["active_members"][str(user.id)]
-
-                # Remove the role if they still have it
-                if target_role and target_role in user.roles:
-                    await user.remove_roles(
-                        target_role,
-                        reason="Manual removal via /timedautorole removeuser")
-                    role_removed_msg = f"• **Role removed:** {target_role.name}"
-                else:
-                    role_removed_msg = "• **Role status:** Already removed or not found"
-
-                # Save configuration
-                await bot.save_auto_role_config()
-
-                await interaction.response.send_message(
-                    f"✅ **Successfully removed {user.display_name} from auto-role system**\n"
-                    f"{role_removed_msg}\n"
-                    f"• **Removed by:** {interaction.user.display_name}",
-                    ephemeral=True)
-
-            except discord.Forbidden:
-                # Still remove from tracking even if we can't remove the role
-                del AUTO_ROLE_CONFIG["active_members"][str(user.id)]
-                await bot.save_auto_role_config()
-
-                await interaction.response.send_message(
-                    f"⚠️ **Removed {user.display_name} from tracking** but couldn't remove role due to permissions.\n"
-                    f"• **Removed by:** {interaction.user.display_name}",
-                    ephemeral=True)
-            except Exception as e:
-                await interaction.response.send_message(
-                    f"❌ Error removing {user.display_name}: {str(e)}",
-                    ephemeral=True)
+            # Send first embed as response, rest as followups
+            await interaction.response.send_message(embed=embeds[0], ephemeral=True)
+            for embed in embeds[1:]:
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
         else:
             await interaction.response.send_message(
-                "❌ Invalid action. Use 'enable', 'disable', 'status', 'list', 'adduser', or 'removeuser'.",
+                "❌ Invalid action. Use 'status' or 'list'.",
                 ephemeral=True)
 
     except Exception as e:
         await interaction.response.send_message(
-            f"❌ Error configuring auto-role: {str(e)}", ephemeral=True)
+            f"❌ Error: {str(e)}", ephemeral=True)
 
 
 @timed_auto_role_command.autocomplete('action')
 async def action_autocomplete(interaction: discord.Interaction, current: str):
-    actions = ['enable', 'disable', 'status', 'list', 'adduser', 'removeuser']
+    actions = ['status', 'list']
     return [
         app_commands.Choice(name=action, value=action) for action in actions
         if current.lower() in action.lower()
-    ]
-
-
-@timed_auto_role_command.autocomplete('timing')
-async def timing_autocomplete(interaction: discord.Interaction, current: str):
-    timings = ['72hours', 'weekend', 'custom']
-    return [
-        app_commands.Choice(name=timing, value=timing) for timing in timings
-        if current.lower() in timing.lower()
     ]
 
 
