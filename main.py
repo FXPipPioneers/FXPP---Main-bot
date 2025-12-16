@@ -77,9 +77,9 @@ intents.members = True  # Required for member join events
 AUTO_ROLE_CONFIG = {
     "enabled": False,
     "role_id": None,
-    "duration_hours": 24,  # Fixed at 24 hours
+    "duration_hours": 72,  # Fixed at 72 hours (3 days)
     "custom_message":
-    "Hey! Your **24-hour free access** to the <#1350929852299214999> channel has unfortunately **ran out**. We truly hope you were able to benefit with us & we hope to see you back soon! For now, feel free to continue following our trade signals in ⁠<#1350929790148022324>",
+    "Hey! Your **3-day free access** to the <#1350929852299214999> channel has unfortunately **ran out**. We truly hope you were able to benefit with us & we hope to see you back soon! For now, feel free to continue following our trade signals in ⁠<#1350929790148022324>",
     "active_members":
     {},  # member_id: {"role_added_time": datetime, "role_id": role_id, "weekend_delayed": bool, "guild_id": guild_id, "expiry_time": datetime}
     "weekend_pending":
@@ -386,8 +386,8 @@ class TradingBot(commands.Bot):
                             try:
                                 weekend_message = (
                                     "**Welcome to FX Pip Pioneers!** As a welcome gift, we usually give our new members "
-                                    "**access to the Premium Signals channel for 24 hours.** However, the trading markets are currently closed for the weekend. "
-                                    "**Your 24-hour countdown will start on Monday at 00:01 Amsterdam time** and your premium access will expire on Tuesday at 01:00 Amsterdam time. "
+                                    "**access to the Premium Signals channel for 3 days.** However, the trading markets are currently closed for the weekend. "
+                                    "**Your 3-day countdown will start on Monday at 00:01 Amsterdam time** and your premium access will expire on Thursday at 01:00 Amsterdam time. "
                                     "Good luck trading!")
                                 await member.send(weekend_message)
                             except discord.Forbidden:
@@ -396,8 +396,8 @@ class TradingBot(commands.Bot):
                                 )
 
                         else:
-                            # Regular join - 24 hours from join time
-                            expiry_time = join_time + timedelta(hours=24)
+                            # Regular join - 72 hours (3 days) from join time
+                            expiry_time = join_time + timedelta(hours=72)
 
                             AUTO_ROLE_CONFIG["active_members"][
                                 member_id_str] = {
@@ -412,7 +412,7 @@ class TradingBot(commands.Bot):
                             try:
                                 welcome_message = (
                                     "**Welcome to FX Pip Pioneers!** As a welcome gift, we've given you "
-                                    "**access to the Premium Signals channel for 24 hours.** "
+                                    "**access to the Premium Signals channel for 3 days.** "
                                     "Good luck trading!")
                                 await member.send(welcome_message)
                             except discord.Forbidden:
@@ -490,7 +490,7 @@ class TradingBot(commands.Bot):
                     # Send missed 3-day DM
                     if not dm_data["dm_3_sent"] and current_time >= dm_3_time:
                         try:
-                            dm_message = "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We truly hope that you were able to catch good trades with us during that time.\n\nAs you've probably seen, our free signals channel gets **1 free signal per day**, while our **Gold Pioneers** in <#1350929852299214999> receive **6+ high-quality signals per day. That means that our Premium Signals Channel offers way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals Channel,** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
+                            dm_message = "Hey! It's been 3 days since your **3-day free access to the Premium Signals channel** ended. We truly hope that you were able to catch good trades with us during that time.\n\nAs you've probably seen, our free signals channel gets **1 free signal per day**, while our **Gold Pioneers** in <#1350929852299214999> receive **6+ high-quality signals per day. That means that our Premium Signals Channel offers way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals Channel,** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str][
                                 "dm_3_sent"] = True
@@ -506,7 +506,7 @@ class TradingBot(commands.Bot):
                     # Send missed 7-day DM
                     if not dm_data["dm_7_sent"] and current_time >= dm_7_time:
                         try:
-                            dm_message = "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 24 hours, imagine what results you could've been seeing by now with full access. It's all about **consistency and staying connected to the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
+                            dm_message = "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 3 days, imagine what results you could've been seeing by now with full access. It's all about **consistency and staying connected to the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer/gold-pioneer/>"
                             await member.send(dm_message)
                             AUTO_ROLE_CONFIG["dm_schedule"][member_id_str][
                                 "dm_7_sent"] = True
@@ -1975,8 +1975,8 @@ class TradingBot(commands.Bot):
                 try:
                     weekend_message = (
                         "**Welcome to FX Pip Pioneers!** As a welcome gift, we usually give our new members "
-                        "**access to the Premium Signals channel for 24 hours.** However, the trading markets are currently closed for the weekend. "
-                        "We're Messaging you to let you know that your 24 hours of access to <#1384668129036075109> will start counting down from "
+                        "**access to the Premium Signals channel for 3 days.** However, the trading markets are currently closed for the weekend. "
+                        "We're Messaging you to let you know that your 3 days of access to <#1384668129036075109> will start counting down from "
                         "the moment the markets open again on Monday. This way, your welcome gift won't be wasted on the weekend "
                         "and you'll actually be able to make use of it.")
                     await member.send(weekend_message)
@@ -1997,7 +1997,7 @@ class TradingBot(commands.Bot):
                 )
 
             else:
-                # Normal join - immediate 24-hour countdown
+                # Normal join - immediate 72-hour (3 day) countdown
                 AUTO_ROLE_CONFIG["active_members"][member_id_str] = {
                     "role_added_time": join_time.isoformat(),
                     "role_id": AUTO_ROLE_CONFIG["role_id"],
@@ -2017,7 +2017,7 @@ class TradingBot(commands.Bot):
                 try:
                     weekday_message = (
                         "**:star2: Welcome to FX Pip Pioneers! :star2:**\n\n"
-                        ":white_check_mark: As a welcome gift, we've given you access to our **Premium Signals channel for 24 hours.** "
+                        ":white_check_mark: As a welcome gift, we've given you access to our **Premium Signals channel for 3 days.** "
                         "That means that you can immediately start profiting from the **6+ trade signals** we send per day in <#1384668129036075109>!\n\n"
                         "***This is your shot at consistency, clarity, and growth in trading. Let's level up together!***"
                     )
@@ -2034,7 +2034,7 @@ class TradingBot(commands.Bot):
                     )
 
                 await self.log_to_discord(
-                    f"✅ Auto-role '{role.name}' added to {member.display_name} (24h countdown starts now)"
+                    f"✅ Auto-role '{role.name}' added to {member.display_name} (72h countdown starts now)"
                 )
 
             # Save the updated config
@@ -4710,7 +4710,7 @@ class TradingBot(commands.Bot):
                     else:
                         expiry_time = expiry_time.astimezone(AMSTERDAM_TZ)
                 else:
-                    # Normal members - 24 hours from role_added_time
+                    # Normal members - 72 hours (3 days) from role_added_time
                     role_added_time = datetime.fromisoformat(
                         data["role_added_time"])
                     if role_added_time.tzinfo is None:
@@ -4724,7 +4724,7 @@ class TradingBot(commands.Bot):
                         role_added_time = role_added_time.astimezone(
                             AMSTERDAM_TZ)
 
-                    expiry_time = role_added_time + timedelta(hours=24)
+                    expiry_time = role_added_time + timedelta(hours=72)
 
                 if current_time >= expiry_time:
                     expired_members.append(member_id)
@@ -4765,7 +4765,7 @@ class TradingBot(commands.Bot):
                         if member:
                             activation_message = (
                                 "Hey! The weekend is over, so the trading markets have been opened again. "
-                                "That means your 24-hour welcome gift has officially started. "
+                                "That means your 3-day welcome gift has officially started. "
                                 "You now have full access to the premium channel. "
                                 "Let's make the most of it by securing some wins together!"
                             )
@@ -4794,9 +4794,9 @@ class TradingBot(commands.Bot):
         # Define the follow-up messages
         dm_messages = {
             3:
-            "Hey! It's been 3 days since your **24-hour free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>",
+            "Hey! It's been 3 days since your **3-day free access to the Premium Signals channel** ended. We hope you were able to catch good trades with us during that time.\n\nAs you've probably seen, the **free signals channel only gets about 1 signal a day**, while inside **Gold Pioneers**, members receive **8–10 high-quality signals every single day in <#1350929852299214999>**. That means way more chances to profit and grow consistently.\n\nWe'd love to **invite you back to Premium Signals** so you don't miss out on more solid opportunities.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>",
             7:
-            "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers  have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 24 hours, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>",
+            "It's been a week since your Premium Signals trial ended. Since then, our **Gold Pioneers  have been catching trade setups daily in <#1350929852299214999>**.\n\nIf you found value in just 3 days, imagine the results you could be seeing by now with full access. It's all about **consistency and staying plugged into the right information**.\n\nWe'd like to **personally invite you to rejoin Premium Signals** and get back into the rhythm.\n\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>",
             14:
             "Hey! It's been two weeks since your access to Premium Signals ended. We hope you've stayed active. \n\nIf you've been trading solo or passively following the free channel, you might be feeling the difference. in <#1350929852299214999>, it's not just about more signals. It's about the **structure, support, and smarter decision-making**. That edge can make all the difference over time.\n\nWe'd love to **officially invite you back into Premium Signals** and help you start compounding results again.\n\n**Feel free to join us again through this link:** <https://whop.com/gold-pioneer>"
         }
@@ -4930,7 +4930,7 @@ class TradingBot(commands.Bot):
                             try:
                                 activation_message = (
                                     "Hey! The weekend is over, so the trading markets have been opened again. "
-                                    "That means your 24-hour welcome gift has officially started. "
+                                    "That means your 3-day welcome gift has officially started. "
                                     "You now have full access to the premium channel. "
                                     "Let's make the most of it by securing some wins together!"
                                 )
@@ -4988,7 +4988,7 @@ class TradingBot(commands.Bot):
 
             # Send DM to the member with the default message
             try:
-                default_message = "Hey! Your **24-hour free access** to the premium channel has unfortunately **ran out**. We truly hope that you were able to benefit with us & we hope to see you back soon! For now, feel free to continue following our trade signals in <#1350929790148022324>."
+                default_message = "Hey! Your **3-day free access** to the premium channel has unfortunately **ran out**. We truly hope that you were able to benefit with us & we hope to see you back soon! For now, feel free to continue following our trade signals in <#1350929790148022324>."
                 await member.send(default_message)
                 await self.log_to_discord(
                     f"✅ Sent expiration DM to {member.display_name}")
@@ -5209,7 +5209,7 @@ def get_remaining_time_display(member_id: str) -> str:
                 return f"Weekend: {hours}h {minutes}m {seconds}s"
 
         else:
-            # Normal member - 24 hours from role_added_time
+            # Normal member - 72 hours from role_added_time
             role_added_time = datetime.fromisoformat(data["role_added_time"])
             if role_added_time.tzinfo is None:
                 if PYTZ_AVAILABLE:
@@ -5220,7 +5220,7 @@ def get_remaining_time_display(member_id: str) -> str:
             else:
                 role_added_time = role_added_time.astimezone(AMSTERDAM_TZ)
 
-            expiry_time = role_added_time + timedelta(hours=24)
+            expiry_time = role_added_time + timedelta(hours=72)
             time_remaining = expiry_time - current_time
 
             if time_remaining.total_seconds() <= 0:
@@ -5331,7 +5331,7 @@ async def owner_check(interaction: discord.Interaction) -> bool:
     user=
     "User to add/remove manually (required for adduser/removeuser actions)",
     timing=
-    "Timing type for manual add: 24hours, weekend, or custom (required for adduser action)",
+    "Timing type for manual add: 72hours, weekend, or custom (required for adduser action)",
     custom_hours="Custom hours for role duration (used with timing=custom)",
     custom_minutes="Custom minutes for role duration (used with timing=custom)"
 )
@@ -5342,7 +5342,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                                   timing: str | None = None,
                                   custom_hours: int | None = None,
                                   custom_minutes: int | None = None):
-    """Configure the timed auto-role system with fixed 24-hour duration"""
+    """Configure the timed auto-role system with fixed 72-hour (3 day) duration"""
 
     # Check if user is bot owner
     if not await owner_check(interaction):
@@ -5363,10 +5363,10 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                     ephemeral=True)
                 return
 
-            # Update configuration (duration is fixed at 24 hours)
+            # Update configuration (duration is fixed at 72 hours / 3 days)
             AUTO_ROLE_CONFIG["enabled"] = True
             AUTO_ROLE_CONFIG["role_id"] = role.id
-            AUTO_ROLE_CONFIG["duration_hours"] = 24  # Fixed duration
+            AUTO_ROLE_CONFIG["duration_hours"] = 72  # Fixed duration (3 days)
 
             # Save configuration
             await bot.save_auto_role_config()
@@ -5374,9 +5374,9 @@ async def timed_auto_role_command(interaction: discord.Interaction,
             await interaction.response.send_message(
                 f"✅ **Auto-role system enabled!**\n"
                 f"• **Role:** {role.mention}\n"
-                f"• **Duration:** 24 hours (fixed)\n"
-                f"• **Weekend handling:** Enabled (24h countdown starts Monday, ends Tuesday)\n\n"
-                f"New members will automatically receive this role for 24 hours.",
+                f"• **Duration:** 72 hours / 3 days (fixed)\n"
+                f"• **Weekend handling:** Enabled (72h countdown starts Monday, ends Thursday)\n\n"
+                f"New members will automatically receive this role for 3 days.",
                 ephemeral=True)
 
         elif action.lower() == "disable":
@@ -5424,7 +5424,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                     status_message += f"• **Role:** {role.mention}\n"
                 else:
                     status_message += f"• **Role:** Not found (ID: {AUTO_ROLE_CONFIG['role_id']})\n"
-                status_message += f"• **Duration:** 24 hours (fixed)\n"
+                status_message += f"• **Duration:** 72 hours / 3 days (fixed)\n"
                 status_message += f"• **Active members:** {actual_active_count}\n"
                 status_message += f"• **Weekend pending:** {weekend_pending_count}\n"
                 status_message += f"• **Weekend handling:** Enabled"
@@ -5495,7 +5495,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
 
             list_message = f"📋 **Active Temporary Role Members**\n"
             list_message += f"**Role:** {role_name}\n"
-            list_message += f"**Duration:** 24 hours (fixed)\n\n"
+            list_message += f"**Duration:** 72 hours / 3 days (fixed)\n\n"
             list_message += "\n".join(
                 member_list[:20]
             )  # Limit to 20 members to avoid message length issues
@@ -5520,10 +5520,10 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                 return
 
             if not timing or timing.lower() not in [
-                    "24hours", "weekend", "custom"
+                    "72hours", "weekend", "custom"
             ]:
                 await interaction.response.send_message(
-                    "❌ You must specify timing: '24hours', 'weekend', or 'custom'.",
+                    "❌ You must specify timing: '72hours', 'weekend', or 'custom'.",
                     ephemeral=True)
                 return
 
@@ -5642,7 +5642,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                     timing_info = f"Custom: {' '.join(duration_text)} (expires {expiry_time.strftime('%A %H:%M')})"
 
                 else:
-                    # 24-hour timing
+                    # 72-hour (3 day) timing
                     AUTO_ROLE_CONFIG["active_members"][user_id_str] = {
                         "role_added_time": now.isoformat(),
                         "role_id": target_role.id,
@@ -5658,7 +5658,7 @@ async def timed_auto_role_command(interaction: discord.Interaction,
                         "guild_id": interaction.guild.id
                     }
 
-                    timing_info = f"24 hours (expires {(now + timedelta(hours=24)).strftime('%A %H:%M')})"
+                    timing_info = f"72 hours / 3 days (expires {(now + timedelta(hours=72)).strftime('%A %H:%M')})"
 
                 # Save configuration
                 await bot.save_auto_role_config()
@@ -5756,7 +5756,7 @@ async def action_autocomplete(interaction: discord.Interaction, current: str):
 
 @timed_auto_role_command.autocomplete('timing')
 async def timing_autocomplete(interaction: discord.Interaction, current: str):
-    timings = ['24hours', 'weekend', 'custom']
+    timings = ['72hours', 'weekend', 'custom']
     return [
         app_commands.Choice(name=timing, value=timing) for timing in timings
         if current.lower() in timing.lower()
